@@ -4,6 +4,7 @@ import org.gradle.api.Task
 import org.gradle.api.tasks.TaskProvider
 import org.gradle.api.tasks.bundling.Zip
 import org.gradle.kotlin.dsl.register
+import org.gradle.kotlin.dsl.named
 
 data class IosAppleReleaseVerificationTasks(
     val packageCodexAgentSwiftPackageBinary: TaskProvider<Zip>,
@@ -13,6 +14,15 @@ data class IosAppleReleaseVerificationTasks(
     val verifyIosPrivacyManifest: TaskProvider<VerifyIosPrivacyAuditTask>,
     val verifyIosReleaseBudgets: TaskProvider<VerifyIosReleaseBudgetsTask>,
 )
+
+/**
+ * The public SwiftPM binary asset lives on the SDK product release `sdk/v<version>`
+ * (docs/RELEASING.md). GitHub release-download paths percent-encode the tag's `/`,
+ * exactly as ci/sdk_candidate_semantics.verify_public_swift_declaration requires.
+ */
+internal fun codexAgentSwiftPackageReleaseUrl(version: String): String =
+    "https://github.com/${CodexAgentBuild.REPOSITORY}/releases/download/sdk%2Fv$version/" +
+        "CodexAgent-$version.xcframework.zip"
 
 internal fun Task.dependsOnSwiftPackageProofProducers(
     toolchain: TaskProvider<*>,
@@ -38,9 +48,8 @@ fun Project.registerIosAppleReleaseVerificationTasks(
     pinnedRustToolchain: String,
 ): IosAppleReleaseVerificationTasks {
     val swiftPackageArchiveName = "CodexAgent-${project.version}.xcframework.zip"
-    val swiftPackageUrl =
-        "https://github.com/${CodexAgentBuild.REPOSITORY}/releases/download/v${project.version}/$swiftPackageArchiveName"
-    val packageCodexAgentSwiftPackageBinary = tasks.register<Zip>("packageCodexAgentSwiftPackageBinary") {
+    val swiftPackageUrl = codexAgentSwiftPackageReleaseUrl(project.version.toString())
+    val packageCodexAgentSwiftPackageBinary = tasks.register<CanonicalAppleZip>("packageCodexAgentSwiftPackageBinary") {
         dependsOn(distribution.prepareCodexAgentReleaseXCFramework)
         archiveFileName.set(swiftPackageArchiveName)
         destinationDirectory.set(layout.buildDirectory.dir("distributions"))
@@ -48,7 +57,15 @@ fun Project.registerIosAppleReleaseVerificationTasks(
         isReproducibleFileOrder = true
         outputs.cacheIf("Reproducible XCFramework binary ZIP") { true }
         from(distribution.releaseXCFrameworkDirectory) { into("CodexAgent.xcframework") }
-    }
+        distribution.sdkCompatibilityFile?.let { compatibility ->
+            dependsOn(":codex-agent-sdk:generateNativeWrapperSdkCompatibility")
+            listOf("ios-arm64", "ios-arm64-simulator").forEach { slice ->
+                from(compatibility) {
+                    into("CodexAgent.xcframework/$slice/CodexAgent.framework/META-INF/codex-agent")
+                }
+            }
+        }
+    }.let { tasks.named<Zip>(it.name) }
 
     val verifyIosDeploymentTargets = tasks.register<VerifyIosDeploymentTargetsTask>("verifyIosDeploymentTargets") {
         dependsOn(distribution.prepareCodexAgentReleaseXCFramework)

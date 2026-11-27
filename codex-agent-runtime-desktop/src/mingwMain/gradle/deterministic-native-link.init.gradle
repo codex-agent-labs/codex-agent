@@ -1,0 +1,12 @@
+gradle.beforeProject { project ->
+    if (project.path != ':codex-agent-runtime-desktop') return
+    if (System.getenv('LINK') != '/Brepro' || System.getenv('_LINK_'))
+        throw new GradleException('Windows binary requires reproducible MSVC linking')
+    project.afterEvaluate {
+        ['linkReleaseSharedMingwX64', 'linkDebugTestMingwX64'].each { name ->
+            def task = project.tasks.findByName(name)
+            if (task == null) throw new GradleException("Missing Windows link task: ${name}")
+            task.toolOptions.freeCompilerArgs.addAll(['-linker-option', '-Wl,--no-insert-timestamp'])
+        }
+    }
+}

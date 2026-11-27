@@ -162,11 +162,13 @@ class FirebaseAndroidRuntimeEvidenceTasksTest {
         """.trimIndent()
 
         private fun reportXml(firstBody: String, secondBody: String): String = """
-            <testsuite tests="2" failures="0" errors="0" skipped="0">
+            <testsuite tests="3" failures="0" errors="0" skipped="0">
               <testcase classname="$ANDROID_RUNTIME_TEST_CLASS"
                 name="missingNonExecutableAndCorruptOverridesFailClosed">$firstBody</testcase>
               <testcase classname="$ANDROID_RUNTIME_TEST_CLASS"
                 name="successfulRuntimeInstallsCertificatePrivacyAndCleanupPolicies">$secondBody</testcase>
+              <testcase classname="$ANDROID_RUNTIME_TEST_CLASS"
+                name="javaHostLifecycleIsObservableAndIdempotentlyCloseable"></testcase>
             </testsuite>
         """.trimIndent()
     }

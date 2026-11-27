@@ -1,0 +1,287 @@
+"""Core Maven composite guards; source-level checks, not hosted product proof."""
+
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+import textwrap
+import unittest
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "ci"))
+from ci.products.inventory import canonical_json_bytes, sha256_bytes
+
+KEY = "sha256:" + "a" * 64
+TREE = "b" * 40
+
+
+class SdkCoreMavenWorkerActionTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.action = (ROOT / ".github/actions/sdk-core-maven-worker/action.yml").read_text()
+
+    def source(self, step):
+        match = re.search(rf"(?ms)^    - id: {re.escape(step)}\n.*?(?=^    - |\Z)", self.action)
+        self.assertIsNotNone(match, step)
+        block = match[0]
+        start = re.search(r"(?m)^( +)python3 -B - <<'PY'\n", block)
+        self.assertIsNotNone(start)
+        script = textwrap.dedent(block[start.end():].split("\n" + start[1] + "PY", 1)[0])
+        if step == "execute":
+            self.assertIn("uses: ./.github/actions/hydrated-evidence-cache", block)
+            self.assertIn("mode: execute", block)
+            self.assertIn("script: |", block)
+            self.assertNotIn("shell:", block)
+        compile(script, "core-maven-" + step, "exec")
+        return script
+
+    def test_retained_original_skips_production_and_keeps_original_context(self):
+        from ci import sdk_campaign_original_locator as locator
+        source = self.source("retained")
+        retained = self.action.split("    - id: retained\n", 1)[1].split("    - id: context", 1)[0]
+        self.assertNotIn("if: inputs.phase == 'binary'", retained)
+        self.assertIn("PHASE: ${{ inputs.phase }}", retained)
+        self.assertLess(self.action.index("- id: identity"), self.action.index("- id: retained"))
+        self.assertLess(self.action.index("- id: retained"), self.action.index("uses: ./.github/actions/setup-kmp"))
+        self.assertIn("if: steps.retained.outputs.reused != 'true'", self.action)
+        self.assertIn("steps.identity.outcome == 'success' && steps.retained.outputs.reused != 'true'", self.action)
+        origin = {"artifact_id": 77, "artifact_sha256": KEY,
+            "context": {"repositoryRoot": "/original/root", "workerRoot": "/original/root/build/worker"}}
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output"
+            for selected, component in ((origin, 'sdk-core'), (None, 'sdk-core'), (origin, 'sdk-android')):
+                output.write_text("")
+                with patch.dict(os.environ, {"PLAN": "/current/plan", "BUILD_KEY": KEY,
+                        "GITHUB_TOKEN": "synthetic-token", "GITHUB_WORKSPACE": str(ROOT),
+                        "GITHUB_OUTPUT": str(output), "PHASE": "package", "COMPONENT": component}, clear=True), \
+                        patch.object(locator, "locate_retained_core_binary_upload", return_value=selected) as lookup:
+                    exec(compile(source, "retained-core", "exec"), {})
+                if component == 'sdk-android':
+                    self.assertEqual('sdk-android', lookup.call_args.kwargs['component'])
+                    self.assertEqual('android', lookup.call_args.kwargs['target'])
+                values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                self.assertEqual("true" if selected else "false", values["reused"])
+                if selected:
+                    self.assertEqual(origin["context"], json.loads(values["original_context"]))
+                    self.assertEqual("77", values["artifact_id"])
+                else:
+                    self.assertEqual({"reused": "false"}, values)
+
+    def environment(self, root, phase):
+        values = {name: "" for name in (
+            "SDK_INPUTS_ID", "SDK_INPUTS_SHA256", "BINARY_ARTIFACT_ID",
+            "BINARY_ARTIFACT_SHA256", "BINARY_CONTRACT_EVIDENCE", "BINARY_ORIGINAL_CONTEXT",
+            "BINARY_ORIGINAL_WORKFLOW_PATH", "BINARY_ORIGINAL_JOB_NAME",
+            "SDK_VALIDATION_TOOLING", "SDK_APPLE_VALIDATION_POLICY",
+            "SDK_FACADE_METADATA_POLICY", "SDK_ANDROID_METADATA_POLICY")}
+        values.update(PHASE=phase, GITHUB_OUTPUT=str(root / "github-output"))
+        if phase == "package":
+            values.update(SDK_INPUTS_ID="1", SDK_INPUTS_SHA256=KEY,
+                          BINARY_ARTIFACT_ID="2", BINARY_ARTIFACT_SHA256=KEY)
+            for name in ("BINARY_CONTRACT_EVIDENCE", "BINARY_ORIGINAL_CONTEXT"):
+                path = root / (name.lower() + ".json")
+                path.write_bytes(canonical_json_bytes({"caller": name}))
+                values[name] = str(path)
+        return values
+
+    def test_internal_preparation_keeps_election_and_policy_fingerprint_before_setup(self):
+        self.assertIn("if: inputs.prepare-core-package == 'true'", self.action)
+        self.assertIn("if: inputs.prepare-core-package != 'true'", self.action)
+        self.assertLess(self.action.index("- id: prepared"), self.action.index("- id: policy"))
+        self.assertIn("ci.sdk_core_package_policy --elect-worker", self.action)
+        for key in ("sdk_matrix", "sdk_workers_required", "plan_path", "discovery_root", "state_root"):
+            self.assertIn("steps.prepared.outputs." + key + " || steps.captured.outputs.", self.action)
+        for key in ("binary-artifact-id", "binary-artifact-sha256", "binary-contract-evidence", "binary-original-context"):
+            self.assertIn("steps.prepared.outputs." + key + " || inputs." + key, self.action)
+        script = self.source("policy")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            values = self.environment(root, "package")
+            fingerprints = {name: sha256_bytes(Path(values[name]).read_bytes())
+                for name in ("BINARY_CONTRACT_EVIDENCE", "BINARY_ORIGINAL_CONTEXT")}
+            digest = sha256_bytes(canonical_json_bytes(fingerprints))
+            values.update(PREPARE_CORE_PACKAGE="true", PREPARED_POLICY_SHA256=digest)
+            for fault in (None, "changed", "missing", "false-with-proof", "invalid-mode", "legacy-context"):
+                selected = dict(values)
+                if fault == "changed": selected["PREPARED_POLICY_SHA256"] = KEY
+                elif fault == "missing": selected["PREPARED_POLICY_SHA256"] = ""
+                elif fault == "false-with-proof": selected["PREPARE_CORE_PACKAGE"] = "false"
+                elif fault == "invalid-mode": selected["PREPARE_CORE_PACKAGE"] = "yes"
+                elif fault == "legacy-context": selected.update(PREPARE_CORE_PACKAGE="false", PREPARED_POLICY_SHA256="", BINARY_CONTEXT_JSON="{}")
+                with self.subTest(fault=fault), patch.dict(os.environ, selected, clear=True):
+                    if fault:
+                        with self.assertRaises(ValueError): exec(compile(script, "prepared-policy", "exec"), {})
+                    else: exec(compile(script, "prepared-policy", "exec"), {})
+
+    def test_policy_rejects_missing_originals_and_noncanonical_or_relative_policy(self):
+        script = self.source("policy")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            for phase in ("binary", "package"):
+                with patch.dict(os.environ, self.environment(root, phase), clear=True):
+                    exec(compile(script, "core-policy", "exec"), {})
+            value = self.environment(root, "package")
+            value["BINARY_ARTIFACT_SHA256"] = ""
+            with patch.dict(os.environ, value, clear=True), self.assertRaisesRegex(ValueError, "all original"):
+                exec(compile(script, "core-policy", "exec"), {})
+            value = self.environment(root, "package")
+            value["BINARY_ARTIFACT_SHA256"] = "sha256:" + "Z" * 64
+            with patch.dict(os.environ, value, clear=True), self.assertRaisesRegex(ValueError, "lowercase"):
+                exec(compile(script, "core-policy", "exec"), {})
+            value = self.environment(root, "package")
+            value["BINARY_ARTIFACT_ID"] = "0"
+            with patch.dict(os.environ, value, clear=True), self.assertRaisesRegex(ValueError, "positive"):
+                exec(compile(script, "core-policy", "exec"), {})
+            value = self.environment(root, "binary")
+            value["SDK_INPUTS_ID"] = "1"
+            with patch.dict(os.environ, value, clear=True), self.assertRaisesRegex(ValueError, "accepts none"):
+                exec(compile(script, "core-policy", "exec"), {})
+            value = self.environment(root, "binary")
+            value["SDK_FACADE_METADATA_POLICY"] = "relative.json"
+            with patch.dict(os.environ, value, clear=True), self.assertRaisesRegex(ValueError, "absolute"):
+                exec(compile(script, "core-policy", "exec"), {})
+
+    def test_exact_phase_route_host_tree_and_policy_pin_before_setup(self):
+        self.assertLess(self.action.index("- id: policy"), self.action.index("- id: captured"))
+        self.assertLess(self.action.index("- id: captured"), self.action.index("- id: identity"))
+        self.assertLess(self.action.index("- id: identity"), self.action.index("uses: ./.github/actions/setup-kmp"))
+        self.assertIn("sdk-family: ${{ inputs.component == 'sdk-android' && 'android' || 'core' }}-${{ inputs.phase }}", self.action)
+        self.assertIn("cache-read-only: 'true'", self.action)
+        self.assertIn("product-worker: 'true'", self.action)
+        script = self.source("identity")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({"validationTree": TREE}))
+            for phase, host, runner in (("binary", "macos-arm64", ("macos-26", "macOS", "ARM64")),
+                                         ("package", "linux-x64", ("ubuntu-24.04", "Linux", "X64"))):
+                row = dict(zip(("runner", "runnerOs", "runnerArch"), runner))
+                row.update(product="sdk", component="sdk-core", phase=phase, target="common", buildKey=KEY)
+                values = self.environment(root, phase)
+                policy = {name: sha256_bytes(Path(values[name]).read_bytes())
+                          for name in ("BINARY_CONTRACT_EVIDENCE", "BINARY_ORIGINAL_CONTEXT") if values[name]}
+                values.update(MATRIX=json.dumps({"include": [row]}), REQUIRED="true", PLAN=str(plan),
+                              BUILD_KEY=KEY, TREE=TREE,
+                              POLICY_SHA256=sha256_bytes(canonical_json_bytes(policy)))
+                for selected_host, selected_row in ((host, row), ("wrong-host", row),
+                                                     (host, {**row, "target": "android"})):
+                    values["MATRIX"] = json.dumps({"include": [selected_row]})
+                    with patch.dict(os.environ, values, clear=True), patch("native_wrappers.host_classifier", return_value=selected_host):
+                        if selected_host == host and selected_row == row:
+                            exec(compile(script, "core-identity", "exec"), {})
+                        else:
+                            with self.assertRaisesRegex(ValueError, "elected host"):
+                                exec(compile(script, "core-identity", "exec"), {})
+
+    def test_binary_context_and_official_upload_outputs_are_caller_owned(self):
+        self.assertLess(self.action.index("- id: identity"), self.action.index("- id: context"))
+        self.assertLess(self.action.index("- id: context"), self.action.index("uses: ./.github/actions/setup-kmp"))
+        self.assertIn("if: inputs.phase == 'binary'", self.action)
+        self.assertIn("steps.context.outputs.value", self.action)
+        self.assertIn("steps.upload.outputs.artifact-id", self.action)
+        self.assertIn("steps.upload.outputs.artifact-digest", self.action)
+        self.assertIn("inputs.phase == 'binary' &&", self.action)
+        outputs = self.action.split("\noutputs:\n", 1)[1].split("\nruns:\n", 1)[0]
+        for output in ("binary-artifact-id", "binary-artifact-sha256"):
+            expression = outputs.split("  " + output + ":", 1)[1].split("\n  binary-", 1)[0]
+            for guard in ("steps.execute.outcome == 'success'", "steps.upload.outcome == 'success'",
+                          "steps.upload.outputs.artifact-id != ''", "steps.upload.outputs.artifact-digest != ''"):
+                self.assertIn(guard, expression)
+        script = self.source("context")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = root / "github-output"
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(root), "GITHUB_OUTPUT": str(output)}, clear=True):
+                exec(compile(script, "core-context", "exec"), {})
+            value = output.read_text().removeprefix("value=")
+            self.assertEqual(canonical_json_bytes({
+                "repositoryRoot": str(root),
+                "workerRoot": str(root / "build/sdk-core-maven-worker"),
+            }), value.encode())
+
+    def test_android_uses_shared_authenticated_controller_without_core_original_replay(self):
+        from ci.products.inventory import sha256_file
+        policy_script, identity_script, execute_script = (self.source(step) for step in ('policy', 'identity', 'execute'))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            archive = root / 'android.tar.gz'
+            archive.write_bytes(b'caller archive; the existing producer verifies the Git pin')
+            plan = root / 'plan.json'
+            plan.write_text(json.dumps({'validationTree': TREE}))
+            values = self.environment(root, 'binary')
+            values.update(COMPONENT='sdk-android', ANDROID_ARCHIVE=str(archive))
+            with patch.dict(os.environ, values, clear=True):
+                exec(compile(policy_script, 'android-policy', 'exec'), {})
+            pinned = dict(line.split('=', 1) for line in (root / 'github-output').read_text().splitlines())['policy_sha256']
+            self.assertEqual(sha256_bytes(canonical_json_bytes({'ANDROID_ARCHIVE': sha256_file(archive)})), pinned)
+            row = dict(product='sdk', component='sdk-android', phase='binary', target='android',
+                       runner='ubuntu-24.04', runnerOs='Linux', runnerArch='X64', buildKey=KEY)
+            values.update(MATRIX=json.dumps({'include': [row]}), REQUIRED='true', PLAN=str(plan),
+                          BUILD_KEY=KEY, TREE=TREE, POLICY_SHA256=pinned, GITHUB_WORKSPACE=str(ROOT),
+                          DISCOVERY=str(root / 'discovery'), STATE=str(root / 'state'), TRUSTED_WORKFLOW_SHA='c' * 40,
+                          CODEX_AGENT_COMPLETED_REUSE_POLICY=str(root / 'native-policy.json'))
+            with patch.dict(os.environ, values, clear=True), patch('native_wrappers.host_classifier', return_value='linux-x64'):
+                exec(compile(identity_script, 'android-identity', 'exec'), {})
+                with patch('subprocess.run') as run:
+                    exec(compile(execute_script, 'android-execute', 'exec'), {})
+                command = run.call_args.args[0]
+                self.assertEqual('sdk-android', command[command.index('--component') + 1])
+                self.assertEqual(str(archive), command[command.index('--android-runtime-archive') + 1])
+                self.assertIn('--completed-frozen-policy', command)
+                self.assertNotIn('core14', ' '.join(command))
+                archive.write_bytes(b'mutated')
+                with self.assertRaisesRegex(ValueError, 'policy changed'):
+                    exec(compile(identity_script, 'android-mutated', 'exec'), {})
+            for component, selected_archive in (('unknown', str(archive)), ('sdk-android', ''), ('sdk-core', str(archive))):
+                with patch.dict(os.environ, {**values, 'COMPONENT': component, 'ANDROID_ARCHIVE': selected_archive}, clear=True):
+                    with self.assertRaisesRegex(ValueError, 'exactly its Android archive'):
+                        exec(compile(policy_script, 'android-invalid', 'exec'), {})
+
+    def test_existing_controllers_receive_exact_caller_inputs_and_attempt_is_retained(self):
+        source = self.source("execute")
+        for flag in ("--sdk-inputs-artifact-id", "--sdk-inputs-artifact-sha256",
+                     "--binary-artifact-id", "--binary-artifact-sha256",
+                     "--binary-contract-evidence", "--binary-original-context",
+                     "--trusted-workflow-sha", "--keyring", "--keys-directory",
+                     "--sdk-facade-metadata-policy", "--sdk-android-metadata-policy"):
+            self.assertIn("'" + flag + "'", source)
+        self.assertIn("'maven-' + phase", source)
+        self.assertIn("if: always() && steps.identity.outcome == 'success'", self.action)
+        self.assertIn("attempt-${{ github.run_attempt }}", self.action)
+        self.assertIn("if-no-files-found: warn", self.action)
+        self.assertIn("overwrite: false", self.action)
+        for forbidden in ("secrets.", "PRIVATE_KEY", "ssh-keygen", "gradlew "):
+            self.assertNotIn(forbidden, self.action)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            for phase in ("binary", "package"):
+                values = self.environment(root, phase)
+                policies = {name: sha256_bytes(Path(values[name]).read_bytes())
+                            for name in ("BINARY_CONTRACT_EVIDENCE", "BINARY_ORIGINAL_CONTEXT") if values[name]}
+                values.update(GITHUB_WORKSPACE=str(ROOT), PLAN=str(root / "plan.json"),
+                              DISCOVERY=str(root / "discovery"), STATE=str(root / "state"),
+                              BUILD_KEY=KEY, POLICY_SHA256=sha256_bytes(canonical_json_bytes(policies)),
+                              TRUSTED_WORKFLOW_SHA="c" * 40)
+                with patch.dict(os.environ, values, clear=True), patch("subprocess.run") as run:
+                    exec(compile(source, "core-execute", "exec"), {})
+                command = run.call_args.args[0]
+                self.assertEqual([sys.executable, "-B", "-m", "ci.sdk_workflow", "maven-" + phase],
+                                 command[:5])
+                self.assertEqual("sdk-core", command[command.index("--component") + 1])
+                self.assertEqual(KEY, command[command.index("--expected-build-key") + 1])
+                if phase == "package":
+                    for flag in ("--sdk-inputs-artifact-id", "--sdk-inputs-artifact-sha256",
+                                 "--binary-artifact-id", "--binary-artifact-sha256",
+                                 "--binary-contract-evidence", "--binary-original-context"):
+                        self.assertIn(flag, command)
+                else:
+                    self.assertNotIn("--binary-artifact-id", command)
+
+
+if __name__ == "__main__":
+    unittest.main()

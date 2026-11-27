@@ -12,6 +12,70 @@ on:
       validationTree:
         required: true
         type: string
+      retainedInstalledConsumers:
+        required: false
+        default: false
+        type: boolean
+      retainedAppleChecks:
+        description: Fixed canonical B and two-V contribution; never a legacy payload alias
+        required: false
+        default: false
+        type: boolean
+      retainedAppleReviewedChecks:
+        description: Scoped checks from the current protected publisher's reviewed Apple record
+        required: false
+        default: false
+        type: boolean
+      retainedSwiftSourceOnly:
+        type: boolean
+        default: false
+      retainedSwiftSourceChecks:
+        type: boolean
+        default: false
+      retainedPackageOnly:
+        description: Run only the hosted ios-package lane from the original SDK iOS binary frameworks
+        type: boolean
+        default: false
+      retainedPackageChecks:
+        description: The separate retained-package caller owns the selected ios-package duties
+        type: boolean
+        default: false
+      planControlId:
+        type: string
+        default: ''
+      resumeOutputs:
+        type: string
+        default: ''
+      sdkBinaryOnly:
+        description: Select only the three native prerequisites of an elected SDK iOS binary
+        required: false
+        default: false
+        type: boolean
+      trustedWorkflowSha:
+        description: Reviewed product workflow authority for native SDK prerequisite reuse
+        required: false
+        default: ''
+        type: string
+    secrets:
+      authority_read_token:
+        required: false
+    outputs:
+      native_tests_artifact_id:
+        value: ${{ jobs.native-tests.outputs.artifact_id }}
+      native_tests_artifact_digest:
+        value: ${{ jobs.native-tests.outputs.artifact_digest }}
+      rust_device_artifact_id:
+        value: ${{ jobs.rust-device.outputs.artifact_id }}
+      rust_device_artifact_digest:
+        value: ${{ jobs.rust-device.outputs.artifact_digest }}
+      rust_simulator_artifact_id:
+        value: ${{ jobs.rust-simulator.outputs.artifact_id }}
+      rust_simulator_artifact_digest:
+        value: ${{ jobs.rust-simulator.outputs.artifact_digest }}
+      swift_artifact_id:
+        value: ${{ jobs.swift-tests.outputs.artifact_id }}
+      swift_artifact_digest:
+        value: ${{ jobs.swift-tests.outputs.artifact_digest }}
 
 permissions:
   actions: read
@@ -21,7 +85,167 @@ env:
   DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
 jobs:
+  retained-swift-source:
+    name: retained-swift-simulator
+    if: inputs.retainedSwiftSourceOnly && !inputs.retainedPackageOnly && !inputs.sdkBinaryOnly
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CODEX_AGENT_THROUGHPUT_TRACE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.validationCommit }}
+          fetch-depth: 0
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ inputs.planControlId }}
+          path: build/ci
+          merge-multiple: true
+      - uses: ./.github/actions/setup-kmp
+        with:
+          cache-read-only: 'true'
+          xcode-fingerprint: auto
+          product-worker: 'true'
+      - id: original
+        env:
+          RESUME_OUTPUTS: ${{ inputs.resumeOutputs }}
+        run: |
+          python3 -B - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_completion_state import _state
+          from ci.reuse import github_output
+          outputs = json.loads(os.environ['RESUME_OUTPUTS'])
+          if outputs.get('full_reuse') != 'true' or outputs.get('wave_failed') != 'false':
+              raise ValueError('Swift source checks require successful exact product resume')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), _state(outputs, runtime_wave='0', sdk_wave=''))
+          PYCODE
+      - name: Compile current Swift package and tests with only the original simulator framework
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_VALIDATION_COMMIT: ${{ inputs.validationCommit }}
+          CI_VALIDATION_TREE: ${{ inputs.validationTree }}
+          ARTIFACT_ID: ${{ steps.original.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.original.outputs.artifact_digest }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+        run: |
+          set -euo pipefail
+          python3 -B .github/actions/run-ci-lane/apple_source_validation.py \
+            --plan "$PWD/build/ci/impact-plan.json" \
+            --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --completed-frozen-policy "${CODEX_AGENT_COMPLETED_REUSE_POLICY:?native authority required}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-retained-swift-source-${{ inputs.validationTree }}-attempt-${{ github.run_attempt }}
+          path: build/ci/retained-swift-source/controls
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 90
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-swift-source-diagnostics-${{ inputs.validationTree }}-attempt-${{ github.run_attempt }}
+          path: build/ci/retained-swift-source/failure.log
+          if-no-files-found: ignore
+          overwrite: false
+          compression-level: 0
+          retention-days: 14
+
+  retained-package:
+    name: retained-package
+    if: inputs.retainedPackageOnly && !inputs.retainedSwiftSourceOnly && !inputs.sdkBinaryOnly
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CODEX_AGENT_THROUGHPUT_TRACE: '1'
+    outputs:
+      artifact_name: ${{ steps.lane.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.validationCommit }}
+          fetch-depth: 0
+      - uses: codex-agent-labs/codex-agent/.github/actions/restore-reuse-qualification@reuse-authority
+        with:
+          authority-read-token: ${{ secrets.authority_read_token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ inputs.planControlId }}
+          path: build/ci-retained-package
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.planArtifact }}
+          path: build/ci
+      - name: Require the one exact authorized plan
+        run: cmp build/ci-retained-package/impact-plan.json build/ci/impact-plan.json
+      - id: original
+        env:
+          RESUME_OUTPUTS: ${{ inputs.resumeOutputs }}
+        run: |
+          python3 -B - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          from ci.sdk_completion_state import _state
+          from ci.reuse import github_output
+          outputs = json.loads(os.environ['RESUME_OUTPUTS'])
+          if outputs.get('full_reuse') != 'true' or outputs.get('wave_failed') != 'false':
+              raise ValueError('Apple package inputs require successful exact product resume')
+          github_output(Path(os.environ['GITHUB_OUTPUT']), _state(outputs, runtime_wave='0', sdk_wave=''))
+          PYCODE
+      - name: Stage only the original SDK iOS binary frameworks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_VALIDATION_COMMIT: ${{ inputs.validationCommit }}
+          CI_VALIDATION_TREE: ${{ inputs.validationTree }}
+          ARTIFACT_ID: ${{ steps.original.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.original.outputs.artifact_digest }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+        run: |
+          set -euo pipefail
+          python3 -B .github/actions/run-ci-lane/apple_package_inputs.py \
+            --plan "$PWD/build/ci-retained-package/impact-plan.json" \
+            --artifact-id "$ARTIFACT_ID" --artifact-sha256 "$ARTIFACT_SHA256" \
+            --trusted-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --completed-frozen-policy "${CODEX_AGENT_COMPLETED_REUSE_POLICY:?native authority required}"
+          frameworks="$PWD/build/ci/retained-package/frameworks"
+          test -d "$frameworks/device/CodexAgent.framework"
+          test -d "$frameworks/simulator/CodexAgent.framework"
+          printf 'IOS_DEVICE_FRAMEWORK=%s\nIOS_SIMULATOR_FRAMEWORK=%s\n' \
+            "$frameworks/device/CodexAgent.framework" "$frameworks/simulator/CodexAgent.framework" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-retained-apple-package-inputs-${{ inputs.validationTree }}-attempt-${{ github.run_attempt }}
+          path: build/ci/retained-package/retained-apple-package-inputs.json
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          retention-days: 90
+      - id: lane
+        uses: ./.github/actions/run-ci-lane
+        with:
+          lane: ios-package
+          # Hosted build duties only; the reviewed Apple contribution's public Swift
+          # manifest check against the authenticated package original owns metadata.
+          build-only: 'true'
+          plan-artifact: ${{ inputs.planArtifact }}
+          validation-commit: ${{ inputs.validationCommit }}
+          validation-tree: ${{ inputs.validationTree }}
+          rust-version: "1.95.0"
+          xcode-version: "26.6"
+
   select:
+    if: ${{ !inputs.retainedSwiftSourceOnly && !inputs.retainedPackageOnly }}
     runs-on: ubuntu-24.04
     outputs:
       native: ${{ steps.lanes.outputs.ios_native_tests }}
@@ -61,13 +285,58 @@ jobs:
           name: ${{ inputs.planArtifact }}
           path: build/ci
       - id: lanes
-        run: >-
-          python3 ci/lane_selection.py --plan build/ci/impact-plan.json --github-output "$GITHUB_OUTPUT"
-          --lane ios-native-tests --lane ios-rust-device --lane ios-rust-simulator
-          --lane ios-framework-device --lane ios-framework-simulator --lane ios-kotlin-tests
-          --lane ios-swift-build --lane ios-swift-tests --lane ios-package
-          --lane ios-privacy-metrics --lane consumer-common
-          --lane consumer-ios-device --lane consumer-ios-simulator
+        env:
+          SDK_BINARY_ONLY: ${{ inputs.sdkBinaryOnly }}
+          RETAINED_CONSUMERS: ${{ inputs.retainedInstalledConsumers }}
+          RETAINED_APPLE: ${{ inputs.retainedAppleChecks }}
+          RETAINED_APPLE_REVIEWED: ${{ inputs.retainedAppleReviewedChecks }}
+          RETAINED_SWIFT_SOURCE: ${{ inputs.retainedSwiftSourceChecks }}
+          RETAINED_PACKAGE: ${{ inputs.retainedPackageChecks }}
+        run: |
+          lanes=(--lane ios-native-tests --lane ios-rust-device --lane ios-rust-simulator)
+          if [ "$SDK_BINARY_ONLY" != true ]; then
+            if [ "$RETAINED_APPLE" = true ]; then
+              # Do not fall back to product compilation or missing legacy framework downloads.
+              # Remaining duties must get their own retained-input caller before broad ordinary dispatch.
+          python3 -B - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          plan = json.loads(Path('build/ci/impact-plan.json').read_text())
+          remaining = [lane for lane in ('ios-native-tests', 'ios-rust-device', 'ios-rust-simulator',
+              'ios-kotlin-tests', 'ios-swift-build', 'ios-package')
+              if any(plan['lanes'][lane][a] for a in ('build', 'test', 'metadata'))]
+          if os.environ['RETAINED_APPLE_REVIEWED'] == 'true':
+              remaining = [lane for lane in remaining if lane not in ('ios-kotlin-tests', 'ios-native-tests', 'ios-rust-device', 'ios-rust-simulator')]
+          if os.environ['RETAINED_SWIFT_SOURCE'] == 'true':
+              remaining = [lane for lane in remaining if lane != 'ios-swift-build']
+          if os.environ['RETAINED_PACKAGE'] == 'true':
+              # The separate retained-package caller runs the unchanged hosted lane from original frameworks.
+              remaining = [lane for lane in remaining if lane != 'ios-package']
+          if remaining:
+              raise ValueError('Ordinary Apple still requires distinct retained-input checks: ' + ', '.join(remaining))
+          PYCODE
+              lanes=()
+              if [ "$RETAINED_APPLE_REVIEWED" != true ]; then
+                lanes+=(--lane ios-privacy-metrics)
+              fi
+            else
+              if [ "$RETAINED_APPLE_REVIEWED" = true ]; then
+                echo 'Reviewed Apple checks require retained Apple mode' >&2; exit 1
+              fi
+              if [ "$RETAINED_PACKAGE" = true ]; then
+                echo 'Retained Apple package checks require retained Apple mode' >&2; exit 1
+              fi
+              lanes+=(--lane ios-framework-device --lane ios-framework-simulator --lane ios-kotlin-tests
+                --lane ios-swift-build --lane ios-swift-tests --lane ios-package
+                --lane ios-privacy-metrics)
+            fi
+            if [ "$RETAINED_CONSUMERS" != true ]; then
+              lanes+=(--lane consumer-common --lane consumer-ios-device --lane consumer-ios-simulator)
+            fi
+          fi
+          if [ "${#lanes[@]}" -gt 0 ]; then
+            python3 ci/lane_selection.py --plan build/ci/impact-plan.json --github-output "$GITHUB_OUTPUT" "${lanes[@]}"
+          fi
 
   native-tests:
     if: needs.select.outputs.native == 'true'
@@ -76,6 +345,8 @@ jobs:
     timeout-minutes: 90
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
+      artifact_id: ${{ steps.lane.outputs.artifact_id }}
+      artifact_digest: ${{ steps.lane.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,6 +356,8 @@ jobs:
         uses: ./.github/actions/run-ci-lane
         with:
           lane: ios-native-tests
+          sdk-prerequisite-reuse: ${{ inputs.sdkBinaryOnly }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}
@@ -95,9 +368,11 @@ jobs:
     if: needs.select.outputs.rust_device == 'true'
     needs: select
     runs-on: macos-26
-    timeout-minutes: 120
+    timeout-minutes: ${{ inputs.sdkBinaryOnly && 240 || 120 }}
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
+      artifact_id: ${{ steps.lane.outputs.artifact_id }}
+      artifact_digest: ${{ steps.lane.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,6 +382,8 @@ jobs:
         uses: ./.github/actions/run-ci-lane
         with:
           lane: ios-rust-device
+          sdk-prerequisite-reuse: ${{ inputs.sdkBinaryOnly }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}
@@ -120,6 +397,8 @@ jobs:
     timeout-minutes: 120
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
+      artifact_id: ${{ steps.lane.outputs.artifact_id }}
+      artifact_digest: ${{ steps.lane.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -129,6 +408,8 @@ jobs:
         uses: ./.github/actions/run-ci-lane
         with:
           lane: ios-rust-simulator
+          sdk-prerequisite-reuse: ${{ inputs.sdkBinaryOnly }}
+          trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
           plan-artifact: ${{ inputs.planArtifact }}
           validation-commit: ${{ inputs.validationCommit }}
           validation-tree: ${{ inputs.validationTree }}
@@ -272,6 +553,8 @@ jobs:
     timeout-minutes: 90
     outputs:
       artifact_name: ${{ steps.lane.outputs.artifact_name }}
+      artifact_id: ${{ steps.lane.outputs.artifact_id }}
+      artifact_digest: ${{ steps.lane.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

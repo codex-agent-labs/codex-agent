@@ -1,0 +1,58 @@
+import groovy.json.JsonSlurper
+buildscript {
+    def input = new JsonSlurper().parse(file(providers.gradleProperty('phase9.context').get()))
+    dependencies { classpath files(input.classpath) }
+}
+def input = new JsonSlurper().parse(file(providers.gradleProperty('phase9.context').get()))
+if (!(input.component in ['jvm', 'node-js', 'node-wasm'])) throw new GradleException('Exact adapter required')
+def reports = file(input.evidenceRoot)
+def stage = file(input.stageRoot)
+def repositoryRoot = file(input.repositoryRoot)
+def jvm = input.component == 'jvm'
+def kind = jvm ? 'jvm-evidence' : 'node-evidence'
+def reportName = (jvm ? 'jvm-runtime-' : input.component == 'node-js' ? 'node-runtime-' : 'node-wasm-runtime-') + input.evidenceTarget + '.json'
+def evidence = tasks.register(jvm ? 'executeImportedJvmRuntimeEvidence' : 'executeImportedNodeRuntimeEvidence', jvm ? RecordJvmRuntimeEvidenceTask : RecordNodeRuntimeEvidenceTask) {
+    candidateCommit.set(input.producerCommit)
+    target.set(input.evidenceTarget)
+    runnerOs.set(input.runnerOs)
+    runnerArch.set(input.runnerArch)
+    distributionManifest.set(new File(repositoryRoot, 'codex-agent-runtime-desktop/codex-app-server-distributions.json'))
+    classifierArchive.set(file(input.classifierArchive))
+    evidenceFile.set(new File(reports, reportName))
+    executionFile.set(new File(reports, reportName.replace('.json', '-execution.json')))
+    if (jvm) {
+        javaExecutable.set(input.javaExecutable)
+        testTask.set(':codex-agent-runtime-desktop:executeImportedJvmRuntimeEvidence')
+        compiledJvmTestRuntime.set(file(input.runnerArchive))
+        testReport.set(new File(reports, 'TEST-jvm-runtime-' + input.evidenceTarget + '.xml'))
+    } else {
+        runtimeBackend.set(input.component == 'node-js' ? 'js' : 'wasm')
+        nodeExecutable.set(input.nodeExecutable)
+        compiledNodeTestRuntime.set(file(input.runnerArchive))
+        def prefix = input.component == 'node-js' ? 'nodeRuntime' : 'nodeWasmRuntime'
+        def targetTitle = input.evidenceTarget.substring(0, 1).toUpperCase() + input.evidenceTarget.substring(1)
+        testReport.set(new File(reports, 'TEST-' + prefix + targetTitle + 'Test.io.github.codex_agent_labs.codexagent.appserver.runtime.NodeCodexRuntimeTest.xml'))
+    }
+}
+def staging = tasks.register('stageAdapterRuntimeValidation', Sync) {
+    dependsOn(evidence)
+    into(new File(stage, 'outputs'))
+    from(evidence.flatMap { it.evidenceFile }) { into kind }
+    from(evidence.flatMap { it.executionFile }) { into 'execution' }
+    from(evidence.flatMap { it.testReport }) { into 'test-report' }
+    includeEmptyDirs = false
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+}
+RuntimeProductStageRegistrationKt.registerRuntimeOutputManifest(project,
+    'writeAdapterRuntimeValidationOutputManifest', staging, providers.provider { input.component },
+    'validation', providers.provider { input.target }, providers.provider { '0.8.0' },
+    [(kind): 'outputs/' + kind, execution: 'outputs/execution', 'test-report': 'outputs/test-report'],
+    layout.dir(providers.provider { new File(stage, 'outputs') }),
+    layout.dir(providers.provider { stage }), files(input.classpath), repositoryRoot)
+gradle.taskGraph.whenReady { graph ->
+    def expected = [evidence.get().path, staging.get().path,
+        ':codex-agent-runtime-desktop:writeAdapterRuntimeValidationOutputManifest'] as Set
+    if (graph.allTasks.collect { it.path }.toSet() != expected) {
+        throw new GradleException('Only the three imported adapter validation tasks may execute')
+    }
+}

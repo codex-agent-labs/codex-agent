@@ -1,0 +1,1 @@
+{"dependencies":[{"name":"libffi-3.3-1-macos-arm64","treeSha256":"sha256:b29ae45d47869086b59617a53eb00ac82cb09d51339d558d1cbbb19a40dffc88"},{"name":"llvm-19-aarch64-macos-essentials-79","treeSha256":"sha256:23d0e06ceec1e781184e91ce7dae827170a420faabfb6639ebcea217f783f600"}],"host":"macos_arm64","kotlinVersion":"2.3.10","schemaVersion":1}

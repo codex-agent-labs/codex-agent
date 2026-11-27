@@ -1,0 +1,1072 @@
+from __future__ import annotations
+
+import contextlib
+import copy
+import io
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+import zipfile
+
+import ci.products.runtime_variant as runtime_variant_module
+from ci.products.aggregate import validate_runtime_variant
+from ci.products.c_abi import (
+    C_ABI_CONTRACT,
+    C_ABI_PACKAGE_MANIFEST,
+    C_ABI_SYMBOL_COUNT,
+    TARGET_SPECS as C_ABI_TARGETS,
+    CAbiPackageInput,
+    package_c_abi_sdk,
+)
+from ci.products.inventory import (
+    canonical_json_bytes,
+    load_canonical_json_bytes,
+    load_json_bytes,
+    sha256_bytes,
+    sha256_file,
+    verified_zip_contents,
+    write_canonical_json,
+)
+from ci.products.receipt import (
+    compute_build_key,
+    output_inventory_digest,
+    write_output_manifest,
+    write_phase_receipt,
+)
+from ci.products.runtime_attestation import (
+    build_runtime_variant_attestation,
+    verify_runtime_variant_attestation,
+)
+from ci.products.runtime_evidence import (
+    RUNTIME_TARGETS as EVIDENCE_TARGETS,
+    build_desktop_evidence,
+    desktop_test_task,
+    imported_desktop_test_task,
+)
+from ci.products.runtime_identity import derive_runtime_identity
+from ci.products.runtime_variant import main, produce_runtime_variant
+from ci.products.signatures import generate_development_key
+
+
+TARGET = "linux-x64"
+RUNTIME_VERSION = "0.2.7"
+COMPATIBILITY_VERSION = "0.2.0"
+DIGEST_A = sha256_bytes(b"a")
+DIGEST_B = sha256_bytes(b"b")
+DIGEST_C = sha256_bytes(b"c")
+
+
+def _producer() -> dict[str, object]:
+    return {
+        "repository": "owner/repository",
+        "workflowPath": ".github/workflows/runtime.yml",
+        "commit": "a" * 40,
+        "tree": "b" * 40,
+        "event": "pull_request",
+        "runId": 1,
+        "runAttempt": 1,
+        "pullRequest": 31,
+    }
+
+
+def _record(path: str, contents: bytes, kind: str) -> dict[str, object]:
+    return {
+        "kind": kind,
+        "relativePath": path,
+        "bytes": len(contents),
+        "sha256": sha256_bytes(contents),
+    }
+
+
+def _inputs(name: str, upstream: list[dict], toolchain: str) -> dict[str, object]:
+    inventory = [{
+        "relativePath": f"inputs/{name}.txt",
+        "bytes": 1,
+        "sha256": sha256_bytes(name.encode()),
+    }]
+    return {
+        "inventory": inventory,
+        "phaseInputDigest": sha256_bytes(canonical_json_bytes(inventory)),
+        "versionIdentity": COMPATIBILITY_VERSION,
+        "upstreamArtifacts": upstream,
+        "toolchainProfileDigest": toolchain,
+        "flagsDigest": DIGEST_C,
+        "outputSchemaVersion": 1,
+    }
+
+
+def _reference(receipt: dict) -> dict[str, object]:
+    return {
+        "product": receipt["product"],
+        "component": receipt["component"],
+        "phase": receipt["phase"],
+        "target": receipt["target"],
+        "buildKey": receipt["buildKey"],
+        "outputsDigest": output_inventory_digest(receipt["outputs"]),
+    }
+
+
+def _receipt(phase: str, inputs: dict, outputs: list[dict], trust_domain: str) -> dict:
+    value = {
+        "schemaVersion": 1,
+        "product": "runtime",
+        "component": TARGET,
+        "phase": phase,
+        "target": TARGET,
+        "productVersion": RUNTIME_VERSION,
+        "buildKey": "",
+        "inputs": inputs,
+        "outputs": sorted(outputs, key=lambda output: output["relativePath"]),
+        "producer": _producer(),
+        "trustDomain": trust_domain,
+        "result": "success",
+    }
+    value["buildKey"] = compute_build_key(
+        product=value["product"],
+        component=value["component"],
+        phase=value["phase"],
+        target=value["target"],
+        inputs=value["inputs"],
+    )
+    return value
+
+
+def _write_zip(path: Path, members: dict[str, bytes], *, sort_members: bool = True) -> None:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
+        for name, contents in (sorted(members.items()) if sort_members else members.items()):
+            info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_STORED
+            info.create_system = 3
+            info.external_attr = (0o100644) << 16
+            archive.writestr(info, contents)
+
+
+class Fixture:
+    def __init__(
+        self,
+        root: Path,
+        private_key: Path,
+        public_key: Path,
+        signing: dict,
+        *,
+        c_abi_producer_commit: str = "a" * 40,
+        c_abi_producer_tree: str = "b" * 40,
+    ):
+        self.root = root
+        root.mkdir()
+        self.private_key = private_key
+        self.public_key = public_key
+        self.signing = signing
+        symbols = tuple(f"codex_agent_symbol_{index:03d}" for index in range(C_ABI_SYMBOL_COUNT))
+        self.header = "".join(f"int {symbol}(void);\n" for symbol in symbols).encode()
+        self.app_binary = b"exact app server binary\n"
+        self.c_abi = root / "codex-agent-c.zip"
+        self.app_server = root / "codex-agent-runtime-desktop-0.2.0-app-server-linux-x64.zip"
+        c_abi_inputs = root / "c-abi-inputs"
+        c_abi_inputs.mkdir()
+        reviewed_header = c_abi_inputs / "codex_agent.h"
+        reviewed_header.write_bytes(self.header)
+        library = c_abi_inputs / "libcodex_agent.so"
+        library.write_bytes(b"runtime library\n")
+        license_path = c_abi_inputs / "LICENSE.txt"
+        license_path.write_bytes(b"license\n")
+        notice_path = c_abi_inputs / "THIRD_PARTY_NOTICES.md"
+        notice_path.write_bytes(b"notice\n")
+        export_policy = c_abi_inputs / "exports.map"
+        node_count = C_ABI_CONTRACT.current.minor - C_ABI_CONTRACT.minimum_compatible.minor + 1
+        export_policy.write_text("".join(
+            f"CODEX_AGENT_{C_ABI_CONTRACT.current.major}.{minor} {{\n    global:\n"
+            + "".join(
+                f"        {symbol};\n"
+                for index, symbol in enumerate(symbols)
+                if index % node_count == minor - C_ABI_CONTRACT.minimum_compatible.minor
+            )
+            + "};\n"
+            for minor in range(
+                C_ABI_CONTRACT.minimum_compatible.minor,
+                C_ABI_CONTRACT.current.minor + 1,
+            )
+        ), encoding="utf-8")
+        package_c_abi_sdk(CAbiPackageInput(
+            target="linuxX64",
+            classifier=C_ABI_TARGETS["linuxX64"].classifier,
+            library_version=COMPATIBILITY_VERSION,
+            producer_commit=c_abi_producer_commit,
+            producer_tree=c_abi_producer_tree,
+            reviewed_header=reviewed_header,
+            license=license_path,
+            notice=notice_path,
+            library=library,
+            export_policy=export_policy,
+        ), self.c_abi)
+        self.supervisor = b"supervisor\n"
+        classifier_payload = {
+            "codex-app-server": self.app_binary,
+            "codex-process-supervisor": self.supervisor,
+            "openai-codex-LICENSE.txt": b"license\n",
+            "openai-codex-NOTICE.txt": b"notice\n",
+        }
+        classifier_manifest = {
+            "schemaVersion": 1,
+            "libraryVersion": COMPATIBILITY_VERSION,
+            "appServerVersion": "0.149.0",
+            "target": "linuxX64",
+            "classifier": "app-server-linux-x64",
+            "members": [
+                {
+                    "name": name,
+                    "size": len(contents),
+                    "sha256": sha256_bytes(contents).removeprefix("sha256:"),
+                    "executable": name in {"codex-app-server", "codex-process-supervisor"},
+                }
+                for name, contents in sorted(classifier_payload.items())
+            ],
+        }
+        _write_zip(self.app_server, {
+            **classifier_payload,
+            "codex-runtime-manifest.json": canonical_json_bytes(classifier_manifest),
+        }, sort_members=False)
+        self.distribution_manifest = root / "codex-app-server-distributions.json"
+        write_canonical_json(self.distribution_manifest, {
+            "version": "0.149.0",
+            "releaseTag": "rust-v0.149.0",
+            "distributions": [
+                {
+                    "target": name,
+                    "classifier": spec.classifier,
+                    "asset": f"{name}.zip",
+                    "archiveSha256": sha256_bytes(name.encode()).removeprefix("sha256:"),
+                    "archiveEntry": f"{name}.bin",
+                    "binarySha256": (
+                        sha256_bytes(self.app_binary).removeprefix("sha256:")
+                        if name == "linuxX64" else sha256_bytes(name.encode()).removeprefix("sha256:")
+                    ),
+                    "executableName": "codex-app-server" if name != "mingwX64" else "codex-app-server.exe",
+                    "supervisorExecutableName": (
+                        "codex-process-supervisor" if name != "mingwX64"
+                        else "codex-process-supervisor.exe"
+                    ),
+                }
+                for name, spec in EVIDENCE_TARGETS.items()
+            ],
+        })
+        self.validation = root / "validation.json"
+        write_canonical_json(self.validation, build_desktop_evidence(
+            _producer()["commit"],
+            "linuxX64",
+            sha256_bytes(self.app_binary).removeprefix("sha256:"),
+            sha256_bytes(self.supervisor).removeprefix("sha256:"),
+            sha256_file(self.app_server).removeprefix("sha256:"),
+            test_task=imported_desktop_test_task("linuxX64"),
+        ))
+
+        contract_projection = {
+            "schemaVersion": 1,
+            "receiptSha256": DIGEST_A,
+            "bundlePath": "outputs/codex-agent-contract-0.2.0.zip",
+            "bundleSha256": DIGEST_B,
+            "manifestSha256": DIGEST_C,
+            "contractVersion": "0.2.0",
+            "contractDigest": DIGEST_A,
+            "componentDigests": [{"component": TARGET, "sha256": DIGEST_B}],
+        }
+        contract_upstream = [{
+            "product": "contract",
+            "component": "contract",
+            "phase": "metadata",
+            "target": "common",
+            "buildKey": DIGEST_A,
+            "outputsDigest": DIGEST_B,
+            "contractProjection": contract_projection,
+        }]
+        self.toolchain = DIGEST_C
+        binary_output = _record("binary/libcodex_agent.so", b"runtime library\n", "runtime-binary")
+        self.receipts = {
+            "binary": _receipt(
+                "binary", _inputs("binary", contract_upstream, self.toolchain),
+                [binary_output], signing["trustDomain"],
+            ),
+        }
+        package_outputs = [
+            {
+                "kind": "app-server",
+                "relativePath": f"outputs/app-server/{self.app_server.name}",
+                "bytes": self.app_server.stat().st_size,
+                "sha256": sha256_file(self.app_server),
+            },
+            {
+                "kind": "c-abi",
+                "relativePath": "outputs/c-abi/codex-agent-c.zip",
+                "bytes": self.c_abi.stat().st_size,
+                "sha256": sha256_file(self.c_abi),
+            },
+            _record("outputs/c-abi-reference/include/codex_agent.h", self.header, "c-abi-reference"),
+            _record("outputs/validation-runner/runner.zip", b"runner\n", "validation-runner"),
+        ]
+        self.receipts["package"] = _receipt(
+            "package", _inputs("package", [_reference(self.receipts["binary"])], self.toolchain),
+            package_outputs, signing["trustDomain"],
+        )
+        self.receipts["package"]["producer"]["commit"] = c_abi_producer_commit
+        self.receipts["package"]["producer"]["tree"] = c_abi_producer_tree
+        self.receipts["validation"] = _receipt(
+            "validation",
+            _inputs("validation", [_reference(self.receipts["package"])], self.toolchain),
+            [
+                _record("outputs/c-abi/reference.txt", b"reference\n", "c-abi"),
+                _record("outputs/native/validation.json", self.validation.read_bytes(), "native"),
+                _record("outputs/native/other.json", b"other\n", "native"),
+            ],
+            signing["trustDomain"],
+        )
+        self.receipt_paths = {}
+        for phase, value in self.receipts.items():
+            path = root / f"{phase}-receipt.json"
+            write_canonical_json(path, value)
+            self.receipt_paths[phase] = path
+        self.identity = derive_runtime_identity({
+            "schemaVersion": 1,
+            "binaryBuildKey": self.receipts["binary"]["buildKey"],
+            "runtimeCompatibilityVersion": COMPATIBILITY_VERSION,
+            "target": TARGET,
+            "contract": {"digest": DIGEST_A, "componentDigest": DIGEST_B},
+            "cAbi": {
+                "version": "1.13.0",
+                "minimumCompatibleVersion": "1.0.0",
+                "identitySchemaVersion": 1,
+                "headerSha256": sha256_bytes(self.header),
+                "symbolSetSha256": DIGEST_A,
+                "symbolCount": 778,
+            },
+            "appServer": {
+                "version": "0.149.0",
+                "releaseTag": "rust-v0.149.0",
+                "binarySha256": sha256_bytes(self.app_binary),
+            },
+            "toolchainProfile": {"id": TARGET, "digest": self.toolchain},
+        })
+        self.output = root / "output"
+        self.output.mkdir()
+
+    def arguments(self) -> dict:
+        return {
+            "identity_envelope": self.identity,
+            "binary_receipt": self.receipt_paths["binary"],
+            "package_receipt": self.receipt_paths["package"],
+            "validation_receipt": self.receipt_paths["validation"],
+            "c_abi_archive": self.c_abi,
+            "app_server_archive": self.app_server,
+            "validation_evidence": self.validation,
+            "distribution_manifest": self.distribution_manifest,
+            "output_directory": self.output,
+        }
+
+    def rewrite_receipt(self, phase: str, value: dict) -> None:
+        value["buildKey"] = compute_build_key(
+            product=value["product"], component=value["component"], phase=value["phase"],
+            target=value["target"], inputs=value["inputs"],
+        )
+        write_canonical_json(self.receipt_paths[phase], value)
+
+
+def _write_metadata_receipt(
+    fixture: Fixture,
+    payload: Path,
+    *,
+    version: str = RUNTIME_VERSION,
+    trust_domain: str = "development",
+) -> Path:
+    validation = load_canonical_json_bytes(fixture.receipt_paths["validation"].read_bytes())
+    with zipfile.ZipFile(payload) as archive:
+        manifest = load_canonical_json_bytes(archive.read("runtime-variant-manifest.json"))
+    projection_digest = next(
+        artifact["sha256"] for artifact in manifest["innerArtifacts"]
+        if artifact["role"] == "validation"
+    )
+    upstream = _reference(validation)
+    upstream["semanticProjection"] = {
+        "schemaVersion": 1,
+        "kind": "runtime-validation-content",
+        "sha256": projection_digest,
+    }
+    receipt = _receipt(
+        "metadata",
+        _inputs("metadata", [upstream], fixture.toolchain),
+        [{
+            "kind": "runtime-variant",
+            "relativePath": f"outputs/{payload.name}",
+            "bytes": payload.stat().st_size,
+            "sha256": sha256_file(payload),
+        }],
+        trust_domain,
+    )
+    receipt["productVersion"] = version
+    receipt["producer"]["commit"] = "d" * 40
+    receipt["producer"]["tree"] = "e" * 40
+    path = fixture.root / "metadata-receipt.json"
+    write_canonical_json(path, receipt)
+    return path
+
+
+def _attestation_paths(payload: Path, directory: Path) -> tuple[Path, Path]:
+    stem = payload.stem
+    return directory / f"{stem}.attestation.json", directory / f"{stem}.attestation.sig"
+
+
+class RuntimeVariantProducerTest(unittest.TestCase):
+    def test_existing_noncanonical_validation_report_is_accepted_by_exact_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            report = load_canonical_json_bytes(fixture.validation.read_bytes())
+            fixture.validation.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            output = next(record for record in fixture.receipts["validation"]["outputs"]
+                          if record["relativePath"] == "outputs/native/validation.json")
+            output["bytes"] = fixture.validation.stat().st_size
+            output["sha256"] = sha256_file(fixture.validation)
+            fixture.rewrite_receipt("validation", fixture.receipts["validation"])
+            payload = produce_runtime_variant(**fixture.arguments())["bundlePath"]
+            self.assertTrue(payload.is_file())
+            metadata = _write_metadata_receipt(fixture, payload)
+            self.assertTrue(build_runtime_variant_attestation(
+                payload, fixture.receipt_paths["binary"], fixture.receipt_paths["package"],
+                fixture.receipt_paths["validation"], metadata, fixture.validation,
+                signing, private_key, public_key, root / "attestation",
+            ))
+
+    def test_output_is_deterministic_and_preserves_inner_archives(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            first = Fixture(root / "first", private_key, public_key, signing)
+            second = Fixture(root / "second", private_key, public_key, signing)
+            first_result = produce_runtime_variant(**first.arguments())
+            second_result = produce_runtime_variant(**second.arguments())
+            first_bytes = first_result["bundlePath"].read_bytes()
+            self.assertEqual(first_bytes, second_result["bundlePath"].read_bytes())
+            self.assertEqual(first_result["bundleSha256"], sha256_bytes(first_bytes))
+            records, contents, _ = verified_zip_contents(
+                first_result["bundlePath"], retained_paths={
+                    "runtime-variant-manifest.json",
+                    "c-abi/codex-agent-c.zip",
+                    "app-server/codex-app-server.zip",
+                }, canonical_stored=True,
+            )
+            self.assertTrue(records)
+            self.assertEqual(first.c_abi.read_bytes(), contents["c-abi/codex-agent-c.zip"])
+            with zipfile.ZipFile(io.BytesIO(contents["c-abi/codex-agent-c.zip"])) as c_abi:
+                c_abi_manifest = load_json_bytes(c_abi.read(C_ABI_PACKAGE_MANIFEST))
+            self.assertEqual(2, c_abi_manifest["schemaVersion"])
+            self.assertNotIn("producerCommit", c_abi_manifest)
+            self.assertNotIn("producerTree", c_abi_manifest)
+            self.assertEqual(
+                first.app_server.read_bytes(), contents["app-server/codex-app-server.zip"],
+            )
+            manifest = validate_runtime_variant(load_canonical_json_bytes(
+                contents["runtime-variant-manifest.json"],
+            ))
+            self.assertNotIn("producer", manifest)
+            self.assertNotIn("runtimeVersion", manifest)
+            self.assertNotIn("signing", manifest)
+            self.assertNotIn("runtime-variant-manifest.sig", {
+                record["relativePath"] for record in records
+            })
+            self.assertEqual(TARGET, manifest["target"])
+            self.assertEqual(TARGET, self.receipts_component(first, "binary"))
+
+    @staticmethod
+    def receipts_component(fixture: Fixture, phase: str) -> str:
+        return load_canonical_json_bytes(fixture.receipt_paths[phase].read_bytes())["component"]
+
+    def test_receipt_chain_tamper_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            package = copy.deepcopy(fixture.receipts["package"])
+            package["inputs"]["upstreamArtifacts"][0]["buildKey"] = DIGEST_C
+            fixture.rewrite_receipt("package", package)
+            with self.assertRaisesRegex(ValueError, "does not link exactly"):
+                produce_runtime_variant(**fixture.arguments())
+
+    def test_receipt_producer_and_release_provenance_do_not_change_bundle_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            first = Fixture(root / "first", private_key, public_key, signing)
+            second = Fixture(root / "second", private_key, public_key, signing)
+            for index, phase in enumerate(("binary", "package", "validation"), start=1):
+                receipt = copy.deepcopy(second.receipts[phase])
+                receipt["producer"]["commit"] = f"{index:x}" * 40
+                receipt["producer"]["tree"] = f"{index + 3:x}" * 40
+                receipt["producer"]["runId"] = 100 + index
+                receipt["productVersion"] = "0.2.8"
+                if phase == "validation":
+                    report = load_canonical_json_bytes(second.validation.read_bytes())
+                    report["candidateCommit"] = receipt["producer"]["commit"]
+                    report["testTask"] = desktop_test_task("linuxX64")
+                    write_canonical_json(second.validation, report)
+                    selected = next(
+                        output for output in receipt["outputs"]
+                        if output["relativePath"] == "outputs/native/validation.json"
+                    )
+                    selected["bytes"] = second.validation.stat().st_size
+                    selected["sha256"] = sha256_file(second.validation)
+                write_canonical_json(second.receipt_paths[phase], receipt)
+            first_result = produce_runtime_variant(**first.arguments())
+            second_result = produce_runtime_variant(**second.arguments())
+            self.assertEqual(first_result["componentId"], second_result["componentId"])
+            self.assertEqual(first_result["bundleSha256"], second_result["bundleSha256"])
+
+    def test_validation_projection_rejects_unrecognized_run_or_release_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            report = load_canonical_json_bytes(fixture.validation.read_bytes())
+            report["runtimeVersion"] = RUNTIME_VERSION
+            write_canonical_json(fixture.validation, report)
+            receipt = copy.deepcopy(fixture.receipts["validation"])
+            selected = next(
+                output for output in receipt["outputs"]
+                if output["relativePath"] == "outputs/native/validation.json"
+            )
+            selected["bytes"] = fixture.validation.stat().st_size
+            selected["sha256"] = sha256_file(fixture.validation)
+            fixture.rewrite_receipt("validation", receipt)
+            with self.assertRaisesRegex(ValueError, "fields are invalid"):
+                produce_runtime_variant(**fixture.arguments())
+
+    def test_archive_byte_tamper_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            _write_zip(fixture.c_abi, {
+                "include/codex_agent.h": fixture.header,
+                "lib/libcodex_agent.so": b"tampered runtime library\n",
+            })
+            with self.assertRaisesRegex(ValueError, "exact package receipt output"):
+                produce_runtime_variant(**fixture.arguments())
+
+    def test_declared_app_server_binary_must_be_in_the_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            with zipfile.ZipFile(fixture.app_server) as archive:
+                members = {name: archive.read(name) for name in archive.namelist()}
+            members["codex-app-server"] = b"different app server\n"
+            manifest = load_canonical_json_bytes(members["codex-runtime-manifest.json"])
+            server = next(
+                member for member in manifest["members"] if member["name"] == "codex-app-server"
+            )
+            server["size"] = len(members["codex-app-server"])
+            server["sha256"] = sha256_bytes(members["codex-app-server"]).removeprefix("sha256:")
+            members["codex-runtime-manifest.json"] = canonical_json_bytes(manifest)
+            _write_zip(fixture.app_server, members)
+            package = copy.deepcopy(fixture.receipts["package"])
+            output = next(
+                value for value in package["outputs"]
+                if value["relativePath"].startswith("outputs/app-server/")
+            )
+            output["bytes"] = fixture.app_server.stat().st_size
+            output["sha256"] = sha256_file(fixture.app_server)
+            fixture.rewrite_receipt("package", package)
+            validation = copy.deepcopy(fixture.receipts["validation"])
+            validation["inputs"]["upstreamArtifacts"] = [_reference(package)]
+            fixture.rewrite_receipt("validation", validation)
+            with self.assertRaisesRegex(ValueError, "App Server hash is not pinned"):
+                produce_runtime_variant(**fixture.arguments())
+
+    def test_declared_app_server_version_must_match_the_distribution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            source = copy.deepcopy(fixture.identity)
+            source.pop("componentId")
+            source.pop("runtimeIdentityJson")
+            source["appServer"]["version"] = "0.150.0"
+            source["appServer"]["releaseTag"] = "rust-v0.150.0"
+            arguments = fixture.arguments()
+            arguments["identity_envelope"] = derive_runtime_identity(source)
+            with self.assertRaisesRegex(ValueError, "app-server archive identity mismatch"):
+                produce_runtime_variant(**arguments)
+
+    def test_symlink_and_output_extras_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            symlink_fixture = Fixture(root / "symlink", private_key, public_key, signing)
+            linked = symlink_fixture.root / "linked-validation.json"
+            linked.symlink_to(symlink_fixture.validation)
+            arguments = symlink_fixture.arguments()
+            arguments["validation_evidence"] = linked
+            with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+                produce_runtime_variant(**arguments)
+
+            extra_fixture = Fixture(root / "extra", private_key, public_key, signing)
+            (extra_fixture.output / "unexpected.txt").write_text("extra", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "must be empty"):
+                produce_runtime_variant(**extra_fixture.arguments())
+
+    def test_concurrent_destination_is_preserved_and_publication_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            sentinel = b"concurrently published sentinel\n"
+            publish = runtime_variant_module._publish_no_replace
+
+            def inject_race(source: Path, destination: Path) -> bool:
+                destination.write_bytes(sentinel)
+                return publish(source, destination)
+
+            with patch.object(
+                runtime_variant_module, "_publish_no_replace", side_effect=inject_race,
+            ) as publication:
+                with self.assertRaisesRegex(ValueError, "concurrently published"):
+                    produce_runtime_variant(**fixture.arguments())
+            publication.assert_called_once()
+            destination = next(fixture.output.iterdir())
+            self.assertEqual(sentinel, destination.read_bytes())
+            self.assertEqual([destination.name], sorted(path.name for path in fixture.output.iterdir()))
+
+    def test_concurrent_parent_swap_is_preserved_and_publication_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            original_output = fixture.root / "published-original"
+            sentinel = b"substituted non-ZIP bytes\n"
+            publish = runtime_variant_module._publish_no_replace
+            published_name: list[str] = []
+
+            def inject_parent_swap(source: Path, destination: Path) -> bool:
+                published = publish(source, destination)
+                published_name.append(destination.name)
+                try:
+                    destination.parent.rename(original_output)
+                    destination.parent.mkdir()
+                    (destination.parent / destination.name).write_bytes(sentinel)
+                except PermissionError as error:
+                    # A held Windows directory handle may reject the swap itself.
+                    raise ValueError("Runtime variant output parent swap was blocked") from error
+                return published
+
+            with patch.object(
+                runtime_variant_module, "_publish_no_replace", side_effect=inject_parent_swap,
+            ) as publication:
+                with self.assertRaisesRegex(ValueError, "parent changed|parent swap was blocked"):
+                    produce_runtime_variant(**fixture.arguments())
+            publication.assert_called_once()
+            self.assertEqual(1, len(published_name))
+            if original_output.exists():
+                original_bundle = original_output / published_name[0]
+                self.assertTrue(original_bundle.is_file())
+                with zipfile.ZipFile(original_bundle) as archive:
+                    self.assertIn("runtime-variant-manifest.json", archive.namelist())
+                replacement = fixture.output / published_name[0]
+                self.assertEqual(sentinel, replacement.read_bytes())
+                self.assertEqual([published_name[0]], sorted(
+                    path.name for path in fixture.output.iterdir()
+                ))
+            else:
+                # The blocked Windows rename leaves the original publication untouched.
+                self.assertTrue((fixture.output / published_name[0]).is_file())
+
+    def test_direct_module_cli_uses_the_same_strict_producer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            identity = fixture.root / "identity.json"
+            write_canonical_json(identity, fixture.identity)
+            arguments = [
+                "--identity", str(identity),
+                "--binary-receipt", str(fixture.receipt_paths["binary"]),
+                "--package-receipt", str(fixture.receipt_paths["package"]),
+                "--validation-receipt", str(fixture.receipt_paths["validation"]),
+                "--c-abi-archive", str(fixture.c_abi),
+                "--app-server-archive", str(fixture.app_server),
+                "--validation-evidence", str(fixture.validation),
+                "--distribution-manifest", str(fixture.distribution_manifest),
+                "--output-directory", str(fixture.output),
+            ]
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(0, main(arguments))
+            self.assertEqual(next(fixture.output.iterdir()), Path(output.getvalue().strip()))
+
+    def test_mixed_receipts_can_receive_independent_release_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, development = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, development)
+            for index, phase in enumerate(("binary", "package", "validation"), start=1):
+                receipt = copy.deepcopy(fixture.receipts[phase])
+                receipt["productVersion"] = f"0.2.{index}"
+                receipt["trustDomain"] = "release" if index == 1 else "development"
+                receipt["producer"]["commit"] = f"{index:x}" * 40
+                receipt["producer"]["tree"] = f"{index + 3:x}" * 40
+                receipt["producer"]["runId"] = index + 10
+                if phase == "validation":
+                    report = load_canonical_json_bytes(fixture.validation.read_bytes())
+                    report["candidateCommit"] = receipt["producer"]["commit"]
+                    write_canonical_json(fixture.validation, report)
+                    selected = next(
+                        output for output in receipt["outputs"]
+                        if output["relativePath"] == "outputs/native/validation.json"
+                    )
+                    selected["bytes"] = fixture.validation.stat().st_size
+                    selected["sha256"] = sha256_file(fixture.validation)
+                write_canonical_json(fixture.receipt_paths[phase], receipt)
+            result = produce_runtime_variant(**fixture.arguments())
+            metadata = _write_metadata_receipt(
+                fixture, result["bundlePath"], version="0.2.4", trust_domain="development",
+            )
+
+            signing = {
+                **development,
+                "trustDomain": "release",
+                "keyId": "release-fixture",
+            }
+            keys = root / "release-keys"
+            keys.mkdir()
+            (keys / "release-fixture.pub").write_bytes(public_key.read_bytes())
+            keyring = root / "keyring.json"
+            write_canonical_json(keyring, {
+                "schemaVersion": 1,
+                "namespace": signing["namespace"],
+                "algorithm": signing["algorithm"],
+                "trustDomain": "release",
+                "activeKey": {
+                    "keyId": signing["keyId"],
+                    "fingerprint": signing["fingerprint"],
+                },
+                "retiredKeys": [],
+            })
+            output = root / "attestation"
+            value = build_runtime_variant_attestation(
+                result["bundlePath"], fixture.receipt_paths["binary"],
+                fixture.receipt_paths["package"], fixture.receipt_paths["validation"],
+                metadata, fixture.validation, signing, private_key, public_key, output,
+                keyring=keyring, keys_directory=keys,
+            )
+            attestation, signature = _attestation_paths(result["bundlePath"], output)
+            manifest, receipts, verified = verify_runtime_variant_attestation(
+                result["bundlePath"], fixture.receipt_paths["binary"],
+                fixture.receipt_paths["package"], fixture.receipt_paths["validation"],
+                metadata, attestation, signature, public_key,
+                required_trust_domain="release", validation_evidence=fixture.validation,
+                keyring=keyring, keys_directory=keys,
+            )
+            self.assertEqual(value, verified)
+            self.assertEqual(result["componentId"], manifest["componentId"])
+            self.assertEqual(
+                ["0.2.1", "0.2.2", "0.2.3", "0.2.4"],
+                [receipts[phase]["productVersion"] for phase in (
+                    "binary", "package", "validation", "metadata",
+                )],
+            )
+            self.assertEqual(
+                ["release", "development", "development", "development"],
+                [receipts[phase]["trustDomain"] for phase in (
+                    "binary", "package", "validation", "metadata",
+                )],
+            )
+            self.assertNotIn("producer", verified)
+            self.assertEqual(sha256_file(metadata), verified["phaseReceipts"]["metadata"])
+            _, _, sdk_verified = verify_runtime_variant_attestation(
+                result["bundlePath"], fixture.receipt_paths["binary"],
+                fixture.receipt_paths["package"], fixture.receipt_paths["validation"],
+                metadata, attestation, signature, public_key,
+                required_trust_domain="release", keyring=keyring, keys_directory=keys,
+            )
+            self.assertEqual(value, sdk_verified)
+
+    def test_metadata_receipt_uses_canonical_stage_path_and_rejects_bare_basename(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            payload = produce_runtime_variant(**fixture.arguments())["bundlePath"]
+            stage = root / "metadata-stage"
+            (stage / "outputs").mkdir(parents=True)
+            (stage / "outputs" / payload.name).write_bytes(payload.read_bytes())
+            write_output_manifest(
+                stage, "runtime", TARGET, "metadata", TARGET, RUNTIME_VERSION,
+                {"runtime-variant": "outputs"},
+            )
+            receipt_root = root / "receipt"
+            receipt_root.mkdir()
+            validation = load_canonical_json_bytes(
+                fixture.receipt_paths["validation"].read_bytes(),
+            )
+            with zipfile.ZipFile(payload) as archive:
+                manifest = load_canonical_json_bytes(
+                    archive.read("runtime-variant-manifest.json"),
+                )
+            upstream = _reference(validation)
+            upstream["semanticProjection"] = {
+                "schemaVersion": 1,
+                "kind": "runtime-validation-content",
+                "sha256": next(
+                    artifact["sha256"] for artifact in manifest["innerArtifacts"]
+                    if artifact["role"] == "validation"
+                ),
+            }
+            inputs = _inputs("metadata", [upstream], fixture.toolchain)
+            build_key = compute_build_key(
+                product="runtime", component=TARGET, phase="metadata", target=TARGET,
+                inputs=inputs,
+            )
+            receipt = write_phase_receipt(
+                stage, receipt_root, "runtime", TARGET, "metadata", TARGET,
+                RUNTIME_VERSION, build_key, inputs, _producer(), "development",
+            )
+            receipt_path = receipt_root / "phase-receipt.json"
+            self.assertEqual(f"outputs/{payload.name}", receipt["outputs"][0]["relativePath"])
+            build_runtime_variant_attestation(
+                payload, fixture.receipt_paths["binary"], fixture.receipt_paths["package"],
+                fixture.receipt_paths["validation"], receipt_path, fixture.validation,
+                signing, private_key, public_key, root / "accepted-attestation",
+            )
+
+            receipt["outputs"][0]["relativePath"] = payload.name
+            write_canonical_json(receipt_path, receipt)
+            with self.assertRaisesRegex(ValueError, "does not bind the exact variant payload"):
+                build_runtime_variant_attestation(
+                    payload, fixture.receipt_paths["binary"], fixture.receipt_paths["package"],
+                    fixture.receipt_paths["validation"], receipt_path, fixture.validation,
+                    signing, private_key, public_key, root / "rejected-attestation",
+                )
+
+    def test_producers_compatible_patches_trust_and_keys_do_not_change_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            first_key, first_public, first_signing = generate_development_key(root / "first-key")
+            second_key, second_public, second_signing = generate_development_key(root / "second-key")
+            first = Fixture(root / "first", first_key, first_public, first_signing)
+            second = Fixture(
+                root / "second",
+                second_key,
+                second_public,
+                second_signing,
+                c_abi_producer_commit="2" * 40,
+                c_abi_producer_tree="5" * 40,
+            )
+            for index, phase in enumerate(("binary", "package", "validation"), start=1):
+                receipt = copy.deepcopy(second.receipts[phase])
+                receipt["productVersion"] = f"0.2.{index + 7}"
+                receipt["trustDomain"] = "release" if index % 2 else "development"
+                receipt["producer"]["commit"] = f"{index:x}" * 40
+                receipt["producer"]["tree"] = f"{index + 3:x}" * 40
+                if phase == "validation":
+                    report = load_canonical_json_bytes(second.validation.read_bytes())
+                    report["candidateCommit"] = receipt["producer"]["commit"]
+                    write_canonical_json(second.validation, report)
+                    selected = next(
+                        output for output in receipt["outputs"]
+                        if output["relativePath"] == "outputs/native/validation.json"
+                    )
+                    selected["bytes"] = second.validation.stat().st_size
+                    selected["sha256"] = sha256_file(second.validation)
+                write_canonical_json(second.receipt_paths[phase], receipt)
+            first_originals = {
+                **{phase: path.read_bytes() for phase, path in first.receipt_paths.items()},
+                "evidence": first.validation.read_bytes(),
+            }
+            second_originals = {
+                **{phase: path.read_bytes() for phase, path in second.receipt_paths.items()},
+                "evidence": second.validation.read_bytes(),
+            }
+            self.assertEqual(first.c_abi.read_bytes(), second.c_abi.read_bytes())
+            self.assertNotEqual(first_originals["package"], second_originals["package"])
+            self.assertNotEqual(first_originals["evidence"], second_originals["evidence"])
+            first_package = load_canonical_json_bytes(first_originals["package"])
+            second_package = load_canonical_json_bytes(second_originals["package"])
+            self.assertEqual(
+                ("a" * 40, "b" * 40),
+                (first_package["producer"]["commit"], first_package["producer"]["tree"]),
+            )
+            self.assertEqual(
+                ("2" * 40, "5" * 40),
+                (second_package["producer"]["commit"], second_package["producer"]["tree"]),
+            )
+            first_result = produce_runtime_variant(**first.arguments())
+            second_result = produce_runtime_variant(**second.arguments())
+            self.assertEqual(
+                first_result["bundlePath"].read_bytes(), second_result["bundlePath"].read_bytes(),
+            )
+            first_metadata = _write_metadata_receipt(first, first_result["bundlePath"])
+            second_metadata = _write_metadata_receipt(
+                second, second_result["bundlePath"], version="0.2.11", trust_domain="release",
+            )
+            first_value = build_runtime_variant_attestation(
+                first_result["bundlePath"], first.receipt_paths["binary"],
+                first.receipt_paths["package"], first.receipt_paths["validation"],
+                first_metadata, first.validation, first_signing, first_key, first_public,
+                root / "first-attestation",
+            )
+            second_value = build_runtime_variant_attestation(
+                second_result["bundlePath"], second.receipt_paths["binary"],
+                second.receipt_paths["package"], second.receipt_paths["validation"],
+                second_metadata, second.validation, second_signing, second_key, second_public,
+                root / "second-attestation",
+            )
+            self.assertNotEqual(first_value, second_value)
+            self.assertNotEqual(first_value["phaseReceipts"], second_value["phaseReceipts"])
+            self.assertNotEqual(first_value["signing"], second_value["signing"])
+            self.assertEqual(first_originals, {
+                **{phase: path.read_bytes() for phase, path in first.receipt_paths.items()},
+                "evidence": first.validation.read_bytes(),
+            })
+            self.assertEqual(second_originals, {
+                **{phase: path.read_bytes() for phase, path in second.receipt_paths.items()},
+                "evidence": second.validation.read_bytes(),
+            })
+
+    def test_attestation_payload_receipt_evidence_signature_and_cross_pair_tamper(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            private_key, public_key, signing = generate_development_key(root / "keys")
+            other_key, other_public, other_signing = generate_development_key(root / "other-keys")
+            fixture = Fixture(root / "fixture", private_key, public_key, signing)
+            result = produce_runtime_variant(**fixture.arguments())
+            payload = result["bundlePath"]
+            metadata = _write_metadata_receipt(fixture, payload)
+            output = root / "attestation"
+            build_runtime_variant_attestation(
+                payload, fixture.receipt_paths["binary"], fixture.receipt_paths["package"],
+                fixture.receipt_paths["validation"], metadata, fixture.validation,
+                signing, private_key, public_key, output,
+            )
+            attestation, signature = _attestation_paths(payload, output)
+
+            def verify(**overrides: Path | str) -> None:
+                values = {
+                    "payload": payload,
+                    "binary_receipt": fixture.receipt_paths["binary"],
+                    "package_receipt": fixture.receipt_paths["package"],
+                    "validation_receipt": fixture.receipt_paths["validation"],
+                    "metadata_receipt": metadata,
+                    "validation_evidence": fixture.validation,
+                    "attestation": attestation,
+                    "signature": signature,
+                    "public_key": public_key,
+                    "required_trust_domain": "development",
+                }
+                values.update(overrides)
+                verify_runtime_variant_attestation(
+                    values["payload"], values["binary_receipt"],
+                    values["package_receipt"], values["validation_receipt"],
+                    values["metadata_receipt"], values["attestation"],
+                    values["signature"], values["public_key"],
+                    required_trust_domain=values["required_trust_domain"],
+                    validation_evidence=values["validation_evidence"],
+                )
+
+            tampered_payload_root = root / "tampered-payload"
+            tampered_payload_root.mkdir()
+            tampered_payload = tampered_payload_root / payload.name
+            tampered_payload.write_bytes(payload.read_bytes()[:-1] + b"x")
+            manifest_root = root / "tampered-manifest"
+            manifest_root.mkdir()
+            tampered_manifest = manifest_root / payload.name
+            with zipfile.ZipFile(payload) as archive:
+                members = {name: archive.read(name) for name in archive.namelist()}
+            manifest = load_canonical_json_bytes(members["runtime-variant-manifest.json"])
+            manifest["producer"] = _producer()
+            members["runtime-variant-manifest.json"] = canonical_json_bytes(manifest)
+            _write_zip(tampered_manifest, members)
+            tampered_receipts = {}
+            original_receipts = {
+                "binary_receipt": fixture.receipt_paths["binary"],
+                "package_receipt": fixture.receipt_paths["package"],
+                "validation_receipt": fixture.receipt_paths["validation"],
+                "metadata_receipt": metadata,
+            }
+            for name, original in original_receipts.items():
+                path = root / f"tampered-{name}.json"
+                receipt = load_canonical_json_bytes(original.read_bytes())
+                receipt["producer"]["runId"] += 1
+                write_canonical_json(path, receipt)
+                tampered_receipts[name] = path
+            tampered_evidence = root / "validation.json"
+            evidence = load_canonical_json_bytes(fixture.validation.read_bytes())
+            evidence["tests"] += 1
+            write_canonical_json(tampered_evidence, evidence)
+            tampered_attestation = root / attestation.name
+            value = load_canonical_json_bytes(attestation.read_bytes())
+            value["manifestSha256"] = DIGEST_A
+            write_canonical_json(tampered_attestation, value)
+            signing_root = root / "tampered-signing"
+            signing_root.mkdir()
+            tampered_signing = signing_root / attestation.name
+            value = load_canonical_json_bytes(attestation.read_bytes())
+            value["signing"]["fingerprint"] = DIGEST_A
+            write_canonical_json(tampered_signing, value)
+            tampered_signature = root / signature.name
+            tampered_signature.write_bytes(signature.read_bytes()[:-2] + b"x\n")
+
+            projection_root = root / "tampered-projection"
+            projection_root.mkdir()
+            tampered_projection = projection_root / payload.name
+            with zipfile.ZipFile(payload) as archive:
+                members = {name: archive.read(name) for name in archive.namelist()}
+            members["evidence/sbom.json"] = canonical_json_bytes({"tampered": True})
+            manifest = load_canonical_json_bytes(members["runtime-variant-manifest.json"])
+            sbom = next(
+                artifact for artifact in manifest["innerArtifacts"]
+                if artifact["role"] == "sbom"
+            )
+            sbom["bytes"] = len(members["evidence/sbom.json"])
+            sbom["sha256"] = sha256_bytes(members["evidence/sbom.json"])
+            members["runtime-variant-manifest.json"] = canonical_json_bytes(manifest)
+            _write_zip(tampered_projection, members)
+            projection_receipt = root / "projection-metadata.json"
+            receipt = load_canonical_json_bytes(metadata.read_bytes())
+            receipt["outputs"][0]["bytes"] = tampered_projection.stat().st_size
+            receipt["outputs"][0]["sha256"] = sha256_file(tampered_projection)
+            write_canonical_json(projection_receipt, receipt)
+            with self.assertRaisesRegex(ValueError, "deterministic evidence"):
+                build_runtime_variant_attestation(
+                    tampered_projection, fixture.receipt_paths["binary"],
+                    fixture.receipt_paths["package"], fixture.receipt_paths["validation"],
+                    projection_receipt, fixture.validation, signing, private_key, public_key,
+                    root / "invalid-projection-attestation",
+                )
+
+            for label, arguments in (
+                ("payload", {"payload": tampered_payload}),
+                ("manifest", {"payload": tampered_manifest}),
+                ("evidence", {"validation_evidence": tampered_evidence}),
+                ("attestation", {"attestation": tampered_attestation}),
+                ("signing", {"attestation": tampered_signing}),
+                ("key", {"public_key": other_public}),
+                ("signature", {"signature": tampered_signature}),
+                ("trust", {"required_trust_domain": "release"}),
+            ):
+                with self.subTest(label=label), self.assertRaises(ValueError):
+                    verify(**arguments)
+            for name, path in tampered_receipts.items():
+                with self.subTest(receipt=name), self.assertRaises(ValueError):
+                    verify(**{name: path})
+
+            other_output = root / "other-attestation"
+            build_runtime_variant_attestation(
+                payload, fixture.receipt_paths["binary"], fixture.receipt_paths["package"],
+                fixture.receipt_paths["validation"], metadata, fixture.validation,
+                other_signing, other_key, other_public, other_output,
+            )
+            _, other_signature = _attestation_paths(payload, other_output)
+            with self.assertRaises(ValueError):
+                verify(signature=other_signature)
+
+
+if __name__ == "__main__":
+    unittest.main()

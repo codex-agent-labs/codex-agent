@@ -1,0 +1,204 @@
+name: SDK Failed Catalog Custody
+
+on:
+  workflow_call:
+    inputs:
+      producerJson:
+        required: true
+        type: string
+      catalogArtifactId:
+        required: true
+        type: string
+      catalogArtifactSha256:
+        required: true
+        type: string
+      trustedWorkflowSha:
+        required: true
+        type: string
+      trustedWorkflowPath:
+        required: true
+        type: string
+      trustedJobName:
+        required: true
+        type: string
+    outputs:
+      custodyArtifactId:
+        value: ${{ jobs.custody.outputs.artifact_id }}
+      custodyArtifactSha256:
+        value: ${{ jobs.custody.outputs.artifact_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  custody:
+    name: sdk-failed-catalog-custody
+    runs-on: ubuntu-24.04
+    environment: product-attestation
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_sha256: sha256:${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Require independently approved catalog and source before checkout
+        id: authority
+        env:
+          PROTECTED_SOURCE_SHA: ${{ vars.CODEX_AGENT_PRODUCT_TRUSTED_SOURCE_SHA }}
+          PROTECTED_PRODUCER_SHA256: ${{ vars.CODEX_AGENT_SDK_CUSTODY_PRODUCER_SHA256 }}
+          PROTECTED_ARTIFACT_ID: ${{ vars.CODEX_AGENT_SDK_CUSTODY_ARTIFACT_ID }}
+          PROTECTED_ARTIFACT_SHA256: ${{ vars.CODEX_AGENT_SDK_CUSTODY_ARTIFACT_SHA256 }}
+          PROTECTED_WORKFLOW_SHA: ${{ vars.CODEX_AGENT_SDK_CUSTODY_WORKFLOW_SHA }}
+          PROTECTED_WORKFLOW_PATH: ${{ vars.CODEX_AGENT_SDK_CUSTODY_WORKFLOW_PATH }}
+          PROTECTED_JOB_NAME: ${{ vars.CODEX_AGENT_SDK_CUSTODY_JOB_NAME }}
+          PRODUCER_JSON: ${{ inputs.producerJson }}
+          CALLER_ARTIFACT_ID: ${{ inputs.catalogArtifactId }}
+          CALLER_ARTIFACT_SHA256: ${{ inputs.catalogArtifactSha256 }}
+          CALLER_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          CALLER_WORKFLOW_PATH: ${{ inputs.trustedWorkflowPath }}
+          CALLER_JOB_NAME: ${{ inputs.trustedJobName }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = codex-agent-labs/codex-agent
+          [[ "$PROTECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$PROTECTED_PRODUCER_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$PROTECTED_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$PROTECTED_ARTIFACT_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$PROTECTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          test -n "$PROTECTED_WORKFLOW_PATH"
+          test -n "$PROTECTED_JOB_NAME"
+          [[ "$PROTECTED_WORKFLOW_PATH" != *$'\n'* && "$PROTECTED_WORKFLOW_PATH" != *$'\r'* ]] || exit 1
+          [[ "$PROTECTED_JOB_NAME" != *$'\n'* && "$PROTECTED_JOB_NAME" != *$'\r'* ]] || exit 1
+          test "${#PROTECTED_WORKFLOW_PATH}" -le 256
+          test "${#PROTECTED_JOB_NAME}" -le 256
+          test "$CALLER_ARTIFACT_ID" = "$PROTECTED_ARTIFACT_ID"
+          test "$CALLER_ARTIFACT_SHA256" = "$PROTECTED_ARTIFACT_SHA256"
+          test "$CALLER_WORKFLOW_SHA" = "$PROTECTED_WORKFLOW_SHA"
+          test "$CALLER_WORKFLOW_PATH" = "$PROTECTED_WORKFLOW_PATH"
+          test "$CALLER_JOB_NAME" = "$PROTECTED_JOB_NAME"
+          printf '%s' "$PRODUCER_JSON" > "$RUNNER_TEMP/sdk-custody-producer.json"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/sdk-custody-producer.json" | cut -d' ' -f1)" = "$PROTECTED_PRODUCER_SHA256"
+          {
+            printf 'source_sha=%s\n' "$PROTECTED_SOURCE_SHA"
+            printf 'producer_sha256=%s\n' "$PROTECTED_PRODUCER_SHA256"
+            printf 'artifact_id=%s\n' "$PROTECTED_ARTIFACT_ID"
+            printf 'artifact_sha256=%s\n' "$PROTECTED_ARTIFACT_SHA256"
+            printf 'workflow_sha=%s\n' "$PROTECTED_WORKFLOW_SHA"
+            printf 'workflow_path=%s\n' "$PROTECTED_WORKFLOW_PATH"
+            printf 'job_name=%s\n' "$PROTECTED_JOB_NAME"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check out reviewed custody verifier and signing policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codex-agent-labs/codex-agent
+          ref: ${{ steps.authority.outputs.source_sha }}
+          path: trusted-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin exact public signing policy from reviewed source
+        id: policy
+        env:
+          PYTHONPATH: ${{ github.workspace }}/trusted-source
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted-source rev-parse 'HEAD^{commit}')" = "$SOURCE_SHA"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          from pathlib import Path
+          from ci.products.inventory import canonical_json_bytes, read_regular_file_bytes, regular_file_inventory, sha256_bytes
+          root = Path('trusted-source').resolve(strict=True)
+          keyring = root / 'gradle/release/product-signing-keys.json'
+          keys = root / 'gradle/release/keys'
+          print('keyring_sha256=' + sha256_bytes(read_regular_file_bytes(keyring, max_bytes=65536, reject_symlink_parents=True)))
+          print('keys_inventory_sha256=' + sha256_bytes(canonical_json_bytes(regular_file_inventory(keys))))
+          PY
+      - name: Verify original failed catalog and prepare custody without signing access
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/trusted-source
+          PRODUCER_SHA256: ${{ steps.authority.outputs.producer_sha256 }}
+          ARTIFACT_ID: ${{ steps.authority.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.authority.outputs.artifact_sha256 }}
+          WORKFLOW_SHA: ${{ steps.authority.outputs.workflow_sha }}
+          WORKFLOW_PATH: ${{ steps.authority.outputs.workflow_path }}
+          JOB_NAME: ${{ steps.authority.outputs.job_name }}
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          KEYRING_SHA256: ${{ steps.policy.outputs.keyring_sha256 }}
+          KEYS_INVENTORY_SHA256: ${{ steps.policy.outputs.keys_inventory_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/sdk_catalog_custody.py prepare \
+            --producer "$RUNNER_TEMP/sdk-custody-producer.json" \
+            --expected-producer-sha256 "$PRODUCER_SHA256" \
+            --artifact-id "$ARTIFACT_ID" \
+            --artifact-sha256 "$ARTIFACT_SHA256" \
+            --trusted-workflow-sha "$WORKFLOW_SHA" \
+            --trusted-workflow-path "$WORKFLOW_PATH" \
+            --trusted-job-name "$JOB_NAME" \
+            --trusted-source-commit "$SOURCE_SHA" \
+            --keyring-path trusted-source/gradle/release/product-signing-keys.json \
+            --keys-directory trusted-source/gradle/release/keys \
+            --expected-keyring-sha256 "$KEYRING_SHA256" \
+            --expected-keys-inventory-sha256 "$KEYS_INVENTORY_SHA256" \
+            --destination "$RUNNER_TEMP/sdk-custody-prepared" > "$RUNNER_TEMP/sdk-custody-prepare.json"
+          printf 'record_sha256=sha256:%s\n' "$(sha256sum "$RUNNER_TEMP/sdk-custody-prepared/sdk-failed-catalog-custody.json" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Sign only exact prepared custody bytes
+        id: sign
+        env:
+          CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY: ${{ secrets.CODEX_AGENT_PRODUCT_ED25519_PRIVATE_KEY }}
+          PYTHONPATH: ${{ github.workspace }}/trusted-source
+          RECORD_SHA256: ${{ steps.prepare.outputs.record_sha256 }}
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          KEYRING_SHA256: ${{ steps.policy.outputs.keyring_sha256 }}
+          KEYS_INVENTORY_SHA256: ${{ steps.policy.outputs.keys_inventory_sha256 }}
+        run: |
+          set -euo pipefail
+          unset GITHUB_TOKEN GH_TOKEN ACTIONS_RUNTIME_TOKEN
+          python3 -B trusted-source/ci/sdk_catalog_custody_signer.py \
+            --prepared-root "$RUNNER_TEMP/sdk-custody-prepared" \
+            --destination "$RUNNER_TEMP/sdk-custody-signed" \
+            --expected-record-sha256 "$RECORD_SHA256" \
+            --trusted-source-commit "$SOURCE_SHA" \
+            --keyring-path trusted-source/gradle/release/product-signing-keys.json \
+            --keys-directory trusted-source/gradle/release/keys \
+            --expected-keyring-sha256 "$KEYRING_SHA256" \
+            --expected-keys-inventory-sha256 "$KEYS_INVENTORY_SHA256" > "$RUNNER_TEMP/sdk-custody-sign.json"
+      - name: Verify signed custody against the original independent selection
+        env:
+          PYTHONPATH: ${{ github.workspace }}/trusted-source
+          PRODUCER_SHA256: ${{ steps.authority.outputs.producer_sha256 }}
+          ARTIFACT_ID: ${{ steps.authority.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.authority.outputs.artifact_sha256 }}
+          WORKFLOW_SHA: ${{ steps.authority.outputs.workflow_sha }}
+          WORKFLOW_PATH: ${{ steps.authority.outputs.workflow_path }}
+          JOB_NAME: ${{ steps.authority.outputs.job_name }}
+          SOURCE_SHA: ${{ steps.authority.outputs.source_sha }}
+          KEYRING_SHA256: ${{ steps.policy.outputs.keyring_sha256 }}
+          KEYS_INVENTORY_SHA256: ${{ steps.policy.outputs.keys_inventory_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -B trusted-source/ci/sdk_catalog_custody.py verify \
+            --producer "$RUNNER_TEMP/sdk-custody-producer.json" \
+            --expected-producer-sha256 "$PRODUCER_SHA256" \
+            --artifact-id "$ARTIFACT_ID" \
+            --artifact-sha256 "$ARTIFACT_SHA256" \
+            --trusted-workflow-sha "$WORKFLOW_SHA" \
+            --trusted-workflow-path "$WORKFLOW_PATH" \
+            --trusted-job-name "$JOB_NAME" \
+            --trusted-source-commit "$SOURCE_SHA" \
+            --keyring-path trusted-source/gradle/release/product-signing-keys.json \
+            --keys-directory trusted-source/gradle/release/keys \
+            --expected-keyring-sha256 "$KEYRING_SHA256" \
+            --expected-keys-inventory-sha256 "$KEYS_INVENTORY_SHA256" \
+            --custody-root "$RUNNER_TEMP/sdk-custody-signed" > "$RUNNER_TEMP/sdk-custody-verify.json"
+      - name: Preserve exact signed custody record without repacking the catalog
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-sdk-failed-catalog-custody-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-custody-signed
+          if-no-files-found: error
+          overwrite: false
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 90

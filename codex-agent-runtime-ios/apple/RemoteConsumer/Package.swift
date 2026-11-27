@@ -14,7 +14,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/codex-agent-labs/codex-agent.git",
-            exact: "0.2.0"
+            exact: "0.8.0"
         ),
     ],
     targets: [

@@ -17,6 +17,8 @@ static inline void codex_close_fd(int descriptor) {
 static inline int codex_make_executable(const char *path) {
     struct stat status;
     if (lstat(path, &status) != 0 || !S_ISREG(status.st_mode)) return -1;
+    /* Reapplying identical permissions invalidates macOS executable translation caches. */
+    if ((status.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == (S_IXUSR | S_IXGRP | S_IXOTH)) return 0;
     return chmod(path, status.st_mode | S_IXUSR | S_IXGRP | S_IXOTH);
 }
 

@@ -1,0 +1,9 @@
+gradle.beforeProject { project ->
+    if (project.rootProject.name != 'codex-agent-runtime' ||
+        (project.path != ':' && project.path != ':codex-agent-runtime-desktop')) return
+    // Compiler identity hashes otherwise reorder JS polyfills and interface metadata.
+    project.extensions.extraProperties.set('kotlin.daemon.jvmargs',
+        '-XX:+UnlockExperimentalVMOptions -XX:hashCode=2')
+    project.extensions.extraProperties.set('kotlin.compiler.execution.strategy', 'daemon')
+    project.extensions.extraProperties.set('kotlin.daemon.useFallbackStrategy', 'false')
+}

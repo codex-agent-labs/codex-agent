@@ -1,0 +1,314 @@
+from __future__ import annotations
+
+from collections.abc import Iterable
+from pathlib import Path
+import tempfile
+from typing import Any
+import zipfile
+
+from .contract_attestation import CONTRACT_EXECUTION_CLOSURE_DIRECTORY, verify_contract_attestation
+from .contract_model import CONTRACT_COMPONENTS
+from .inventory import (
+    canonical_json_bytes,
+    load_canonical_json_bytes,
+    read_regular_file_bytes,
+    regular_file_inventory,
+    require_semver,
+    require_sha256,
+    sha256_bytes,
+    sha256_file,
+    snapshot_regular_tree,
+)
+from .receipt import output_inventory_digest, validate_output_manifest, validate_phase_receipt, verify_output_manifest, verify_output_manifest_identity
+
+
+PRODUCT_JSON_LIMIT = 16 * 1024 * 1024
+PUBLIC_KEY_LIMIT = 1024 * 1024
+_VERIFIED = object()
+
+
+class VerifiedContractExecutionProjection:
+    """Exact binary-receipt capability; execution provenance stays outside keys."""
+
+    __slots__ = ("_canonical", "_verified", "_receipt")
+
+    def __init__(self, value: dict[str, Any], verified: object, receipt: bytes | None = None) -> None:
+        if verified is not _VERIFIED:
+            raise TypeError("Contract execution projections must be produced by verification")
+        self._canonical = canonical_json_bytes(value)
+        self._verified = verified
+        self._receipt = receipt
+
+    def receipt_value(self) -> dict[str, Any]:
+        if self._verified is not _VERIFIED:
+            raise TypeError("Contract execution projection is not authenticated")
+        return load_canonical_json_bytes(self._canonical)
+
+    def output_inventory(self, receipt_sha256: str, outputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        value = self.receipt_value()
+        if self._receipt is None or sha256_bytes(self._receipt) != receipt_sha256 or \
+                value["receiptSha256"] != receipt_sha256:
+            raise ValueError("Contract execution content requires its exact verified receipt")
+        receipt = validate_phase_receipt(load_canonical_json_bytes(self._receipt))
+        if receipt["outputs"] != outputs:
+            raise ValueError("Contract execution content and supplied output inventory differ")
+        content = [record for record in receipt["outputs"] if record["kind"] != "contract-execution"]
+        if output_inventory_digest(content) != value["sha256"]:
+            raise ValueError("Contract execution content digest differs from its verified inventory")
+        return content
+
+
+def verify_contract_execution_projection(
+    stage_root: Path, phase_receipt: bytes | Path, *, expected_receipt_sha256: str,
+) -> VerifiedContractExecutionProjection:
+    from .contract import _contract_payload_identity, verify_contract_execution_archive
+
+    receipt_bytes = _receipt_bytes(phase_receipt)
+    if sha256_bytes(receipt_bytes) != require_sha256(expected_receipt_sha256, "Contract binary receipt digest"):
+        raise ValueError("Contract binary receipt differs from its authenticated digest")
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    if (receipt["product"], receipt["component"], receipt["phase"], receipt["target"]) != (
+        "contract", "contract", "binary", "common",
+    ):
+        raise ValueError("Contract execution projection requires a Contract binary receipt")
+    with tempfile.TemporaryDirectory(prefix="contract-execution-projection-") as temporary:
+        stage = Path(temporary).resolve() / "stage"
+        snapshot_regular_tree(stage_root, stage)
+        manifest = verify_output_manifest_identity(
+            stage, "contract", "contract", "binary", "common", receipt["productVersion"],
+        )
+        if manifest["outputs"] != receipt["outputs"]:
+            raise ValueError("Contract binary receipt and stage inventory differ")
+        execution = [record for record in receipt["outputs"] if record["kind"] == "contract-execution"]
+        if len(execution) != 1 or execution[0]["relativePath"] != "outputs/execution/contract-execution.zip":
+            raise ValueError("Contract binary stage must retain exactly one execution archive")
+        verify_contract_execution_archive(stage / execution[0]["relativePath"], semantic_root=stage / "outputs")
+        # Validate the exact reusable content separately from its external execution archive.
+        payload = Path(temporary).resolve() / "payload"
+        payload.mkdir()
+        for name in ("maven", "evidence", "inventories"):
+            snapshot_regular_tree(stage / "outputs" / name, payload / name)
+        _contract_payload_identity(payload, receipt["productVersion"])
+        semantic_outputs = [record for record in receipt["outputs"] if record["kind"] != "contract-execution"]
+        payload_paths = {"outputs/" + record["relativePath"] for record in regular_file_inventory(payload)}
+        if {record["relativePath"] for record in semantic_outputs} != payload_paths:
+            raise ValueError("Contract binary stage has undeclared reusable content")
+        return VerifiedContractExecutionProjection({
+            "schemaVersion": 1,
+            "kind": "contract-execution-content",
+            "sha256": output_inventory_digest(semantic_outputs),
+            "receiptSha256": expected_receipt_sha256,
+        }, _VERIFIED, receipt_bytes)
+
+
+class VerifiedContractProjection:
+    """Opaque value created only after Contract Bundle authentication."""
+
+    __slots__ = ("_canonical", "_verified", "_coverage")
+
+    def __init__(self, value: dict[str, Any], verified: object, coverage_digest: str | None = None) -> None:
+        if verified is not _VERIFIED:
+            raise TypeError("Contract projections must be produced by verification")
+        self._canonical = canonical_json_bytes(value)
+        self._verified = verified
+        self._coverage = coverage_digest
+
+    def receipt_value(self, *, include_coverage: bool = False) -> dict[str, Any]:
+        if self._verified is not _VERIFIED:
+            raise TypeError("Contract projection is not authenticated")
+        value = load_canonical_json_bytes(self._canonical)
+        if include_coverage:
+            value.update(schemaVersion=2, canonicalCoverageDigest=require_sha256(
+                self._coverage, "Authenticated Contract canonical coverage digest"))
+        return value
+
+    def restrict(self, required_components: Iterable[str]) -> VerifiedContractProjection:
+        components = _required_components(required_components)
+        value = self.receipt_value()
+        available = {
+            record["component"]: record
+            for record in value["componentDigests"]
+        }
+        if not set(components).issubset(available):
+            raise ValueError("Authenticated Contract projection does not contain the required components")
+        return VerifiedContractProjection({
+            **value,
+            "componentDigests": [available[component] for component in components],
+        }, _VERIFIED, self._coverage)
+
+    @property
+    def components(self) -> tuple[str, ...]:
+        return tuple(
+            record["component"]
+            for record in self.receipt_value()["componentDigests"]
+        )
+
+
+def _receipt_bytes(value: bytes | Path) -> bytes:
+    if type(value) is bytes:
+        if not value or len(value) > PRODUCT_JSON_LIMIT:
+            raise ValueError("Contract metadata receipt size is outside the fixed bound")
+        return value
+    return read_regular_file_bytes(
+        Path(value),
+        max_bytes=PRODUCT_JSON_LIMIT,
+        reject_symlink_parents=True,
+    )
+
+
+def _required_components(values: Iterable[str]) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ValueError("Required Contract components must be a nonempty iterable")
+    components = tuple(values)
+    if any(type(component) is not str or component not in CONTRACT_COMPONENTS for component in components):
+        raise ValueError("Required Contract components contain an unsupported component")
+    if not components or len(components) != len(set(components)):
+        raise ValueError("Required Contract components must be nonempty and unique")
+    return tuple(sorted(components))
+
+
+def _manifest_bytes(archive: Path) -> bytes:
+    with zipfile.ZipFile(archive) as source:
+        try:
+            member = source.getinfo("contract-manifest.json")
+        except KeyError as error:
+            raise ValueError("Authenticated Contract Bundle is missing its manifest") from error
+        if member.file_size <= 0 or member.file_size > PRODUCT_JSON_LIMIT:
+            raise ValueError("Authenticated Contract manifest size is outside the fixed bound")
+        return source.read(member)
+
+
+def verify_contract_component_projection(
+    stage_root: Path,
+    phase_receipt: bytes | Path,
+    attestation: Path,
+    attestation_signature: Path,
+    public_key: Path,
+    *,
+    expected_trust_domain: str,
+    expected_contract_version: str,
+    required_components: Iterable[str],
+    keyring: Path | None = None,
+    keys_directory: Path | None = None,
+) -> VerifiedContractProjection:
+    """Derive target component digests only from authenticated Contract metadata."""
+    if expected_trust_domain not in {"development", "release"}:
+        raise ValueError("Expected Contract trust domain must be development or release")
+    version = require_semver(expected_contract_version, "Expected Contract version")
+    components = _required_components(required_components)
+
+    receipt_bytes = _receipt_bytes(phase_receipt)
+    receipt = validate_phase_receipt(load_canonical_json_bytes(receipt_bytes))
+    if (
+        receipt["product"],
+        receipt["component"],
+        receipt["phase"],
+        receipt["target"],
+        receipt["productVersion"],
+    ) != ("contract", "contract", "metadata", "common", version):
+        raise ValueError("Contract metadata receipt identity is invalid")
+    public_key_bytes = read_regular_file_bytes(
+        Path(public_key),
+        max_bytes=PUBLIC_KEY_LIMIT,
+        reject_symlink_parents=True,
+    )
+    attestation_bytes = read_regular_file_bytes(
+        Path(attestation),
+        max_bytes=PRODUCT_JSON_LIMIT,
+        reject_symlink_parents=True,
+    )
+    signature_bytes = read_regular_file_bytes(
+        Path(attestation_signature),
+        max_bytes=PUBLIC_KEY_LIMIT,
+        reject_symlink_parents=True,
+    )
+    with tempfile.TemporaryDirectory(prefix="codex-agent-contract-projection-") as temporary:
+        temporary_root = Path(temporary).resolve()
+        stage = temporary_root / "stage"
+        snapshot_regular_tree(Path(stage_root), stage)
+        receipt_path = temporary_root / "phase-receipt.json"
+        receipt_path.write_bytes(receipt_bytes)
+        attestation_path = temporary_root / Path(attestation).name
+        attestation_path.write_bytes(attestation_bytes)
+        snapshot_regular_tree(
+            Path(attestation).parent / CONTRACT_EXECUTION_CLOSURE_DIRECTORY,
+            temporary_root / CONTRACT_EXECUTION_CLOSURE_DIRECTORY,
+        )
+        signature_path = temporary_root / Path(attestation_signature).name
+        signature_path.write_bytes(signature_bytes)
+        trusted_key = temporary_root / "public-key.pub"
+        trusted_key.write_bytes(public_key_bytes)
+
+        output_manifest_bytes = read_regular_file_bytes(
+            stage / "output-manifest.json",
+            max_bytes=PRODUCT_JSON_LIMIT,
+            reject_symlink_parents=True,
+        )
+        output_manifest = validate_output_manifest(
+            load_canonical_json_bytes(output_manifest_bytes),
+        )
+        if (
+            output_manifest["product"],
+            output_manifest["component"],
+            output_manifest["phase"],
+            output_manifest["target"],
+            output_manifest["productVersion"],
+        ) != ("contract", "contract", "metadata", "common", version):
+            raise ValueError("Contract metadata output manifest identity is invalid")
+        verify_output_manifest(stage, output_manifest)
+        if receipt["outputs"] != output_manifest["outputs"]:
+            raise ValueError("Contract metadata receipt and output manifest disagree")
+
+        bundles = [
+            output
+            for output in output_manifest["outputs"]
+            if output["kind"] == "contract-bundle"
+        ]
+        if len(bundles) != 1:
+            raise ValueError("Contract metadata must declare exactly one Contract Bundle")
+        bundle = bundles[0]
+        expected_path = f"outputs/codex-agent-contract-{version}.zip"
+        if bundle["relativePath"] != expected_path:
+            raise ValueError("Contract Bundle output path is invalid")
+        archive = stage / expected_path
+        if sha256_file(archive) != bundle["sha256"]:
+            raise ValueError("Contract Bundle output digest is invalid")
+
+        manifest, verified_receipt, _ = verify_contract_attestation(
+            archive,
+            receipt_path,
+            attestation_path,
+            signature_path,
+            trusted_key,
+            required_trust_domain=expected_trust_domain,
+            keyring=keyring,
+            keys_directory=keys_directory,
+        )
+        if canonical_json_bytes(verified_receipt) != receipt_bytes or verified_receipt != receipt:
+            raise ValueError("Authenticated Contract metadata receipt bytes changed during projection")
+        if manifest["contractVersion"] != version:
+            raise ValueError("Contract manifest version does not match the expected Contract version")
+
+        manifest_bytes = _manifest_bytes(archive)
+        if load_canonical_json_bytes(manifest_bytes) != manifest:
+            raise ValueError("Authenticated Contract manifest bytes changed during projection")
+        verify_output_manifest(stage, output_manifest)
+        if sha256_file(archive) != bundle["sha256"]:
+            raise ValueError("Contract Bundle changed during projection")
+
+        return VerifiedContractProjection({
+            "schemaVersion": 1,
+            "receiptSha256": sha256_bytes(receipt_bytes),
+            "bundlePath": expected_path,
+            "bundleSha256": bundle["sha256"],
+            "manifestSha256": sha256_bytes(manifest_bytes),
+            "contractVersion": manifest["contractVersion"],
+            "contractDigest": manifest["contractDigest"],
+            "componentDigests": [
+                {
+                    "component": component,
+                    "sha256": manifest["components"][component]["sha256"],
+                }
+                for component in components
+            ],
+        }, _VERIFIED, manifest["canonicalCoverageDigest"])

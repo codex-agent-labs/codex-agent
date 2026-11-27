@@ -1,0 +1,147 @@
+import io
+import os
+from pathlib import Path
+import tarfile
+import tempfile
+import unittest
+import zipfile
+from unittest import mock
+
+from ci.products.inventory import sha256_file
+from ci.products.toolchain_capture_bootstrap import prepare
+
+
+def _provision_probe(command, *, check, env):
+    assert check is True
+    assert command[3] == "-Xcheck-dependencies"
+    assert Path(command[4]).read_text(encoding="utf-8") == "fun main() = Unit\n"
+    assert command[5] == "-output"
+    assert Path(command[6]).parent == Path(command[4]).parent
+    (Path(env["KONAN_DATA_DIR"]) / "dependencies").mkdir()
+
+
+class CaptureBootstrapTest(unittest.TestCase):
+    def test_windows_capture_uses_pinned_zip_and_dependency_only_launcher(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            plugin = root / "plugin.jar"
+            plugin.write_bytes(b"pinned Kotlin plugin")
+            archive = root / "native.zip"
+            prefix = "kotlin-native-prebuilt-windows-x86_64-2.3.10"
+            with zipfile.ZipFile(archive, "w") as target:
+                for relative, data in (
+                    ("bin/konanc.bat", b"@echo off\r\n"),
+                    ("konan/compiler.fingerprint", b"1234567890abcdef"),
+                    ("konan/konan.properties", b"dependenciesUrl=https://download.jetbrains.com/kotlin/native\n"),
+                    ("konan/lib/kotlin-native-compiler-embeddable.jar", b"compiler"),
+                ):
+                    target.writestr(f"{prefix}/{relative}", data)
+            plugin_name = "kotlin-gradle-plugin-2.3.10-gradle813.jar"
+            archive_name = "kotlin-native-prebuilt-2.3.10-windows-x86_64.zip"
+            metadata = (
+                "<verification-metadata><components><component>"
+                f'<artifact name="{plugin_name}"><sha256 value="{sha256_file(plugin)[7:]}"/></artifact>'
+                f'<artifact name="{archive_name}"><sha256 value="{sha256_file(archive)[7:]}"/></artifact>'
+                "</component></components></verification-metadata>"
+            ).encode()
+            authorities = {
+                "gradle/libs.versions.toml": b'[versions]\nkotlin = "2.3.10"\n',
+                "runtime/gradle/verification-metadata.xml": metadata,
+            }
+            with mock.patch.dict(os.environ, {"RUNNER_OS": "Windows", "RUNNER_ARCH": "X64"}), \
+                    mock.patch("ci.products.toolchain_capture_bootstrap.git_regular_blob_bytes",
+                               side_effect=lambda _, __, path, *, max_bytes: authorities[path]), \
+                    mock.patch("ci.products.toolchain_capture_bootstrap.subprocess.run",
+                               side_effect=_provision_probe) as run:
+                paths = prepare(root, "a" * 40, "windows-x64", root / "out", root / "konan",
+                                plugin_source=plugin, archive_source=archive)
+            self.assertEqual(archive_name, Path(paths["archive"]).name)
+            self.assertEqual("mingw_x64", paths["konanTarget"])
+            self.assertEqual((str(Path(paths["compiler"]) / "bin/konanc.bat"),
+                              "-target", "mingw_x64", "-Xcheck-dependencies"),
+                             run.call_args.args[0][:4])
+            self.assertTrue(run.call_args.kwargs["check"])
+
+    def test_pinned_inputs_precede_dependency_only_compiler_check(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            plugin = root / "plugin.jar"
+            plugin.write_bytes(b"pinned Kotlin plugin")
+            archive = root / "native.tar.gz"
+            prefix = "kotlin-native-prebuilt-linux-x86_64-2.3.10"
+            with tarfile.open(archive, "w:gz") as target:
+                for relative, data in (
+                    ("bin/konanc", b"#!/bin/sh\n"),
+                    ("konan/compiler.fingerprint", b"1234567890abcdef"),
+                    ("konan/konan.properties", b"dependenciesUrl=https://download.jetbrains.com/kotlin/native\n"),
+                    ("konan/lib/kotlin-native-compiler-embeddable.jar", b"compiler"),
+                ):
+                    entry = tarfile.TarInfo(f"{prefix}/{relative}")
+                    entry.size = len(data)
+                    entry.mode = 0o755 if relative == "bin/konanc" else 0o644
+                    target.addfile(entry, io.BytesIO(data))
+            plugin_name = "kotlin-gradle-plugin-2.3.10-gradle813.jar"
+            archive_name = "kotlin-native-prebuilt-2.3.10-linux-x86_64.tar.gz"
+            metadata = (
+                "<verification-metadata><components><component>"
+                f'<artifact name="{plugin_name}"><sha256 value="{sha256_file(plugin)[7:]}"/></artifact>'
+                f'<artifact name="{archive_name}"><sha256 value="{sha256_file(archive)[7:]}"/></artifact>'
+                "</component></components></verification-metadata>"
+            ).encode()
+            authorities = {
+                "gradle/libs.versions.toml": b'[versions]\nkotlin = "2.3.10"\n',
+                "runtime/gradle/verification-metadata.xml": metadata,
+            }
+            output = root / "out"
+            konan = root / "konan"
+            with mock.patch.dict(os.environ, {"RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"}), \
+                    mock.patch("ci.products.toolchain_capture_bootstrap.git_regular_blob_bytes",
+                               side_effect=lambda _, __, path, *, max_bytes: authorities[path]), \
+                    mock.patch("ci.products.toolchain_capture_bootstrap.subprocess.run",
+                               side_effect=_provision_probe) as run:
+                paths = prepare(root, "a" * 40, "linux-x64", output, konan,
+                                plugin_source=plugin, archive_source=archive)
+                self.assertEqual(archive_name, Path(paths["archive"]).name)
+                self.assertEqual(plugin_name, Path(paths["plugin"]).name)
+                self.assertTrue(Path(paths["compiler"]).joinpath("bin/konanc").is_file())
+                command = run.call_args.args[0]
+                self.assertEqual((str(Path(paths["compiler"]) / "bin/konanc"),
+                                  "-target", "linux_x64", "-Xcheck-dependencies"), command[:4])
+                self.assertEqual(str(konan), run.call_args.kwargs["env"]["KONAN_DATA_DIR"])
+                self.assertTrue(run.call_args.kwargs["check"])
+
+                run.side_effect = lambda *_args, **_kwargs: None
+                with self.assertRaisesRegex(ValueError, "dependency root.*missing or unsafe"):
+                    prepare(root, "a" * 40, "linux-x64", root / "empty-deps",
+                            root / "empty-konan", plugin_source=plugin, archive_source=archive)
+
+                tampered = root / "tampered.tar.gz"
+                tampered.write_bytes(archive.read_bytes() + b"x")
+                with self.assertRaisesRegex(ValueError, "Git-pinned SHA-256"):
+                    prepare(root, "a" * 40, "linux-x64", root / "rejected", root / "rejected-konan",
+                            plugin_source=plugin, archive_source=tampered)
+                self.assertFalse((root / "rejected-konan" / prefix).exists())
+
+                linked = root / "linked-konan"
+                linked.mkdir()
+                actual_dependencies = root / "actual-dependencies"
+                actual_dependencies.mkdir()
+                try:
+                    (linked / "dependencies").symlink_to(actual_dependencies, target_is_directory=True)
+                except (OSError, NotImplementedError):
+                    self.skipTest("Directory symlinks are unavailable on this host")
+                with self.assertRaisesRegex(ValueError, "dependency root.*unsafe"):
+                    prepare(root, "a" * 40, "linux-x64", root / "linked-rejected", linked,
+                            plugin_source=plugin, archive_source=archive)
+                self.assertFalse((linked / prefix).exists())
+
+                redirected = root / "redirected-konan"
+                redirected.symlink_to(root / "actual-konan", target_is_directory=True)
+                with self.assertRaisesRegex(ValueError, "data path.*unsafe"):
+                    prepare(root, "a" * 40, "linux-x64", root / "ancestor-rejected",
+                            redirected / "nested", plugin_source=plugin, archive_source=archive)
+                self.assertFalse((root / "actual-konan").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
