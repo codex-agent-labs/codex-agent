@@ -157,7 +157,7 @@ jobs:
           fi
       - name: Download original plan and source inventories
         if: fromJSON(inputs.planOutputs).tooling_unsigned_recovery == ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ fromJSON(inputs.planOutputs).plan_id }}
           path: ${{ runner.temp }}/tooling-original-plan
@@ -201,7 +201,7 @@ jobs:
           PY
       - id: upload_tooling
         name: Preserve exact signed tooling and original provenance
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -314,12 +314,12 @@ jobs:
           trusted-workflow-path: .github/workflows/contract-validation.yml
           trusted-job-name: product-validation / contract-validation / tooling-attestation
           policy-revision: ${{ fromJSON(inputs.planOutputs).validation_commit }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ fromJSON(inputs.planOutputs).plan_artifact }}
           path: build/ci
       - if: fromJSON(inputs.planOutputs).contract_next_phase == 'binary'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codex-agent-product-phase-contract-contract-binary-common-${{ fromJSON(inputs.planOutputs).validation_tree }}
           path: build/product-phase/contract-contract-binary-common
@@ -412,7 +412,7 @@ jobs:
             --destination build/product-phase/contract-contract-package-common
       - name: Upload the Contract package phase
         if: steps.select_after_binary.outputs.next_phase == 'package'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -505,7 +505,7 @@ jobs:
             --destination build/product-phase/contract-contract-validation-common
       - name: Upload the Contract validation phase
         if: steps.select_after_package.outputs.next_phase == 'validation'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -590,7 +590,7 @@ jobs:
             --destination build/product-phase/contract-contract-metadata-common
       - name: Upload the Contract metadata phase
         if: steps.select_after_validation.outputs.next_phase == 'metadata'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -649,7 +649,7 @@ jobs:
             --completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY"
       - id: upload_resume_controls
         if: env.CODEX_AGENT_COMPLETED_REUSE_POLICY != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -659,7 +659,7 @@ jobs:
           retention-days: 90
       - name: Preserve the complete unsigned Contract state for separate attestation
         id: upload_final_state
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -693,7 +693,7 @@ jobs:
             --output-directory build/contract-attestation-inputs/execution-closure
       - name: Preserve unsigned payload and full original execution closure
         id: upload_attestation_inputs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -707,7 +707,7 @@ jobs:
       - name: Preserve the independently authenticated retained release envelope
         id: upload_retained_handoff
         if: hashFiles('build/ci/product-reuse/retained-contract/capture/release-upload/contract-input/execution-closure/contract-execution-closure.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -794,7 +794,7 @@ jobs:
             --handoff-root "$RUNNER_TEMP/contract-release-evidence/contract-input" \
             --destination "$RUNNER_TEMP/contract-release-controls"
       - id: upload_release_controls
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
@@ -804,7 +804,7 @@ jobs:
           retention-days: 90
       - name: Preserve the exact release handoff and all external source evidence
         id: upload_attestation
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           if-no-files-found: error
           overwrite: false
