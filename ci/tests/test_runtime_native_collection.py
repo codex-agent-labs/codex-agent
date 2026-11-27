@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+from ci.tests import association_fixture
 from ci.tests import test_runtime_supervisor_capture as supervisor_fixture
 from ci.tests.test_product_resume_capture import archive, product_reuse
 from products.inventory import canonical_json_bytes, load_canonical_json, sha256_bytes
@@ -72,6 +73,9 @@ class RuntimeNativeCollectionTest(unittest.TestCase):
                 return self.run
             if url == prefix + "/git/commits/" + self.producer["commit"]:
                 return self.commit
+            association = association_fixture.live(self.run, self.commit)
+            if url in association:
+                return association[url]
             matches = [artifact for artifact in self.artifacts if url == prefix + f"/actions/artifacts/{artifact['id']}"]
             if len(matches) == 1:
                 return matches[0]

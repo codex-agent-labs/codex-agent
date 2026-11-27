@@ -5,6 +5,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from ci.tests import association_fixture
 from ci.tests import test_runtime_resume_capture as fixture
 from ci.tests.test_runtime_resume_capture import archive, product_reuse
 from ci.sdk_nested_wave_locator import _COLLECTORS
@@ -29,7 +30,8 @@ class SdkStateCaptureTest(unittest.TestCase):
 
     def capture(self, **changes):
         source = self.source
-        with patch.object(product_reuse, "api_json", side_effect=[source.run, source.commit, self.artifact]), \
+        with patch.object(product_reuse, "api_json", side_effect=association_fixture.sequence(
+                    [source.run, source.commit, self.artifact], source.association)), \
                 patch.object(product_reuse, "paginated_items", return_value=[self.job]), \
                 patch.object(product_reuse, "download_artifact_to_file",
                     side_effect=lambda artifact, token, destination, **kwargs:

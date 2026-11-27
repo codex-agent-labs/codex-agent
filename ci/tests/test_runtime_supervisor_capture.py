@@ -3,6 +3,7 @@
 import copy
 from unittest import mock
 
+from ci.tests import association_fixture
 from ci.tests.test_ci import GitFixture
 from ci.tests.test_product_resume_capture import archive, product_reuse
 from ci.products.inventory import load_canonical_json, sha256_bytes
@@ -34,6 +35,8 @@ class RuntimeSupervisorCaptureTest(GitFixture):
         }
         self.commit = {"sha": self.producer["commit"], "tree": {"sha": self.producer["tree"]},
                        "parents": [{"sha": "1" * 40}, {"sha": "2" * 40}]}
+        # A live association of PR N (not the pinned PR 31) needs fresh reads.
+        self.association = association_fixture.live(self.run, self.commit)
         self.job = {"id": 901, "run_id": 91, "head_sha": self.producer["commit"],
                     "name": "product-validation / runtime-linux-arm64-supervisor",
                     "status": "completed", "conclusion": "success"}
@@ -49,10 +52,11 @@ class RuntimeSupervisorCaptureTest(GitFixture):
         }
 
     def capture(self, destination, *, run=None, jobs=None, artifact=None, raw=None):
-        with mock.patch.object(product_reuse, "api_json", side_effect=[
-            self.run if run is None else run, self.commit,
-            self.artifact if artifact is None else artifact,
-        ]) as query, mock.patch.object(product_reuse, "paginated_items", return_value=(
+        sequence = iter([self.run if run is None else run, self.commit,
+                         self.artifact if artifact is None else artifact])
+        def respond(url, token):
+            return self.association[url] if url in self.association else next(sequence)
+        with mock.patch.object(product_reuse, "api_json", side_effect=respond) as query, mock.patch.object(product_reuse, "paginated_items", return_value=(
             [self.job] if jobs is None else jobs
         )) as listing, mock.patch.object(product_reuse, "download_artifact", return_value=(
             self.raw if raw is None else raw
@@ -76,7 +80,7 @@ class RuntimeSupervisorCaptureTest(GitFixture):
         self.assertEqual(self.run, result["observed"][0]["run"])
         self.assertEqual([self.job], result["observed"][0]["jobs"])
         self.assertEqual(original_plan, self.plan_path.read_bytes())
-        self.assertEqual(3, query.call_count)
+        self.assertEqual(3 + len(self.association), query.call_count)
         listing.assert_called_once_with(
             "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/91/attempts/3/jobs",
             "jobs", "not-a-real-token")

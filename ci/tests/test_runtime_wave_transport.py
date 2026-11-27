@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from ci.products.inventory import load_canonical_json, sha256_bytes
+from ci.tests import association_fixture
 from ci.tests.test_product_resume_capture import archive
 from ci.tests import test_runtime_resume_capture as resume_fixture
 
@@ -38,9 +39,9 @@ class RuntimeWaveTransportTest(unittest.TestCase):
         contents, raw, artifact, job = self.wave_values(wave, members)
         artifact.update({} if artifact_changes is None else artifact_changes)
         job.update({} if job_changes is None else job_changes)
-        with mock.patch.object(product_reuse, "api_json", side_effect=[
+        with mock.patch.object(product_reuse, "api_json", side_effect=association_fixture.sequence([
             self.run, self.commit, artifact,
-        ]) as query, mock.patch.object(
+        ], self.association)) as query, mock.patch.object(
             product_reuse, "paginated_items", return_value=[job],
         ) as listing, mock.patch.object(
             product_reuse, "download_artifact_to_file",
@@ -77,7 +78,7 @@ class RuntimeWaveTransportTest(unittest.TestCase):
             self.assertEqual(artifact, result["artifact"])
             self.assertEqual([job], result["observed"][0]["jobs"])
             self.assertEqual(result, load_canonical_json(destination / "capture-transport.json"))
-            self.assertEqual(3, query.call_count)
+            self.assertEqual(3 + len(self.association), query.call_count)
             listing.assert_called_once_with(
                 "https://api.github.com/repos/codex-agent-labs/codex-agent/"
                 "actions/runs/91/attempts/3/jobs",

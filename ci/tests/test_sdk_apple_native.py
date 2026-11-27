@@ -20,6 +20,7 @@ sys.path.insert(0, str(CI_ROOT))
 
 import receipt as lane_receipt  # noqa: E402
 import reuse as lane_reuse  # noqa: E402
+from ci.tests import association_fixture
 import sdk_apple_native  # noqa: E402
 from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes  # noqa: E402
 from ci.tests import test_ci as ci_fixture  # noqa: E402
@@ -198,8 +199,12 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
 
     def invoke(self, *, uploads=None, plan_path=None, environ=None, original_uploads=None,
                original_binary_receipt_path=None):
+        association = association_fixture.live(self.run, self.observed_commit)
+
         def query(url, token):
             self.assertEqual(self.token, token)
+            if url in association:
+                return association[url]
             attempt = (f"https://api.github.com/repos/{self.producer['repository']}"
                        f"/actions/runs/{self.producer['runId']}/attempts/{self.producer['runAttempt']}")
             if url == attempt:
@@ -287,7 +292,9 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                 )
                 self.assertEqual(set(sdk_apple_native.LANES), set(result["transport"]["artifacts"]))
                 self.assertEqual(result["inventory"], regular_file_inventory(result["directory"]))
-            self.assertEqual((12, 3, 3), tuple(call.call_count for call in calls))
+            # Three tested-commit observations, each with its live association reads.
+            reads = len(association_fixture.live(self.run, self.observed_commit))
+            self.assertEqual((12 + 3 * reads, 3, 3), tuple(call.call_count for call in calls))
         finally:
             self.close(patches)
         self.assertEqual(self.plan_before, self.plan_path.read_bytes())
@@ -319,7 +326,8 @@ class SdkAppleNativeInputsTest(ci_fixture.GitFixture):
                     self.assertEqual(self.plan_before, (
                         result["captureRoot"] / "plan/impact-plan.json"
                     ).read_bytes())
-                self.assertEqual((12, 3, 3), tuple(call.call_count for call in calls))
+                reads = len(association_fixture.live(self.run, self.observed_commit))
+                self.assertEqual((12 + 3 * reads, 3, 3), tuple(call.call_count for call in calls))
             finally:
                 self.close(patches)
         self.assertGreaterEqual(validate.call_count, 2)

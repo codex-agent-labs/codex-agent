@@ -14,6 +14,7 @@ import unittest
 from unittest import mock
 import zipfile
 
+from ci.tests import association_fixture
 from ci import tooling_release
 from ci.products.inventory import (
     canonical_json_bytes, load_canonical_json_bytes, regular_file_inventory,
@@ -158,6 +159,7 @@ class ToolingReleaseTest(unittest.TestCase):
         selected_artifact = self.artifact if artifact is None else artifact
         listed = [selected_artifact] if artifacts is None else artifacts
         selected_archive = self.archive if archive is None else archive
+        association = association_fixture.live(selected_run, self.commit)
 
         def request(url, token):
             self.assertEqual("not-a-real-token", token)
@@ -166,6 +168,8 @@ class ToolingReleaseTest(unittest.TestCase):
                 return json.dumps(selected_run).encode()
             if url == f"https://api.github.com/repos/{REPOSITORY}/git/commits/{self.producer['commit']}":
                 return json.dumps(self.commit).encode()
+            if url in association:
+                return json.dumps(association[url]).encode()
             if url.startswith(f"{run_root}/attempts/{self.producer['runAttempt']}/jobs?"):
                 return json.dumps({"jobs": selected_jobs}).encode()
             if url.startswith(f"{run_root}/artifacts?"):

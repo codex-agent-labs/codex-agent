@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 import zipfile
 
+from ci.tests import association_fixture
 from ci.tests import test_runtime_supervisor_capture as supervisor_fixture
 from ci.tests.test_product_resume_capture import archive, product_reuse
 from ci.products.inventory import (load_canonical_json, publish_regular_tree as actual_publish_regular_tree,
@@ -18,7 +19,8 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
         fixture = supervisor_fixture.RuntimeSupervisorCaptureTest()
         fixture.setUp()
         self.addCleanup(fixture.tearDown)
-        for name in ("root", "plan_path", "environment", "producer", "pin", "run", "commit", "job", "artifact"):
+        for name in ("root", "plan_path", "environment", "producer", "pin", "run", "commit", "job", "artifact",
+                     "association"):
             setattr(self, name, copy.deepcopy(getattr(fixture, name)))
         self.job["name"] = "product-validation / product-resume"
         self.contents = {
@@ -33,11 +35,11 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
 
     def capture(self, destination, *, run=None, commit=None, jobs=None, artifact=None, raw=None,
                 original_run_id=None, original_run_attempt=None, environment=None):
-        with mock.patch.object(product_reuse, "api_json", side_effect=[
+        with mock.patch.object(product_reuse, "api_json", side_effect=association_fixture.sequence([
             self.artifact if artifact is None else artifact,
             self.run if run is None else run, self.commit if commit is None else commit,
             self.artifact if artifact is None else artifact,
-        ]) as query, mock.patch.object(product_reuse, "paginated_items", return_value=(
+        ], self.association)) as query, mock.patch.object(product_reuse, "paginated_items", return_value=(
             [self.job] if jobs is None else jobs
         )) as listing, mock.patch.object(product_reuse, "download_artifact_to_file",
             side_effect=lambda artifact, token, destination, **kwargs:
@@ -71,6 +73,7 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
             return [dict(original_job, id=999)] if "/attempts/4/" in url else [original_job]
         def query(url, *args):
             if "/artifacts/" in url: return artifact
+            if url in self.association: return self.association[url]
             if "/commits/" in url: return self.commit
             attempt = int(url.rsplit("/", 1)[1])
             return {**self.run, "run_attempt": attempt, "run_started_at":
@@ -114,7 +117,7 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
         self.assertEqual(self.run, result["observed"][0]["run"])
         self.assertEqual(self.commit, result["observed"][0]["testedCommit"])
         self.assertEqual([self.job], result["observed"][0]["jobs"])
-        self.assertEqual(4, query.call_count)
+        self.assertEqual(4 + len(self.association), query.call_count)
         listing.assert_called_once_with(
             "https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/91/attempts/3/jobs",
             "jobs", "not-a-real-token")
@@ -149,7 +152,7 @@ class RuntimeResumeCaptureTest(unittest.TestCase):
         result, query, _, _ = self.capture_members(self.root / 'build/planned-success', physical)
         self.assertEqual('product-validation / plan', result['observed'][0]['jobs'][0]['name'])
         self.assertEqual(self.artifact['name'], result['artifact']['name'])
-        self.assertEqual(4, query.call_count)
+        self.assertEqual(4 + len(self.association), query.call_count)
         for index, (owner, change) in enumerate((
                 ('job', {'conclusion': 'failure'}), ('job', {'name': 'product-validation / unrelated'}),
                 ('artifact', {'created_at': '2026-01-01T01:03:00Z'}),

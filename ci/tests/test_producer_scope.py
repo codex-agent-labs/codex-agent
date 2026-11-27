@@ -163,6 +163,18 @@ class AssociationTest(unittest.TestCase):
         self.rejected("association-missing", scope.pull_request_binding, run(pull_requests=[live()]), commit(),
                       expected_commit=TESTED, pull_request=33)
 
+    def test_live_reads_use_the_head_the_binding_verifies(self):
+        # When run.head_sha is the tested merge itself, _live_binding binds the
+        # live entry's head; the reads must prove ancestry for that same head.
+        tested = commit()
+        observed = run(pull_requests=[live()], head=TESTED)
+        fetch = LiveFetcher()
+        self.assertEqual(HEAD, bind(observed, tested, fetch=fetch, number=33)["head"])
+        self.assertIn(f"compare/{HEAD}...{PR_HEAD}?per_page=1", fetch.paths)
+        self.assertNotIn(f"compare/{TESTED}...{PR_HEAD}?per_page=1", fetch.paths)
+        self.rejected("ancestry", bind, observed, tested, number=33, fetch=LiveFetcher(**{
+            f"compare/{HEAD}...{PR_HEAD}?per_page=1": compare(PR_HEAD, behind=1, status="diverged")}))
+
     def test_live_force_pushed_away_head_rejects(self):
         # I2: the run head is no longer within the PR head after a force-push.
         self.rejected("ancestry", bind, run(pull_requests=[live()]), number=33, fetch=LiveFetcher(**{
