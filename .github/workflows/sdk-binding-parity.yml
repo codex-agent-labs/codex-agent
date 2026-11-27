@@ -21,6 +21,10 @@ on:
       reuseCompletedParity:
         type: boolean
         default: false
+      discoverCompletedParity:
+        description: Reuse an exact-input attested parity of this PR scope, else run fresh
+        type: boolean
+        default: false
       planOutputs:
         type: string
         default: '{}'
@@ -71,7 +75,7 @@ jobs:
       artifact_run_id: ${{ steps.parity-output.outputs.artifact_run_id }}
       report_sha256: ${{ steps.parity-output.outputs.report_sha256 }}
       report_artifact_id: ${{ steps.upload_report.outputs.artifact-id }}
-      report_artifact_sha256: ${{ inputs.reuseCompletedParity && format('sha256:{0}', steps.upload_report.outputs.artifact-digest) || '' }}
+      report_artifact_sha256: ${{ (inputs.reuseCompletedParity || steps.discover-parity.outputs.reused == 'true') && format('sha256:{0}', steps.upload_report.outputs.artifact-digest) || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -79,7 +83,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.validationCommit }}
       - name: Require imported complete state for original parity reuse
-        if: inputs.reuseCompletedParity
+        if: inputs.reuseCompletedParity || inputs.discoverCompletedParity
         env:
           IMPORTED_ONLY: ${{ inputs.importedOnly }}
           SDK_COMPLETE: ${{ fromJSON(inputs.sdkOutputs).complete }}
@@ -358,8 +362,39 @@ jobs:
           sdk-validation-tooling: ${{ steps.tooling.outputs.tooling-policy }}
           sdk-apple-validation-policy: ${{ steps.apple-policy.outputs.apple-policy }}
           trusted-workflow-sha: ${{ inputs.trustedWorkflowSha }}
+      - name: Reuse exact-input parity attested in this PR scope
+        id: discover-parity
+        if: inputs.importedOnly && !inputs.reuseCompletedParity && inputs.discoverCompletedParity
+        # Discovery only proposes reuse; any failure leaves reused unset and runs fresh.
+        continue-on-error: true
+        env:
+          PLAN: ${{ steps.capture.outputs.plan-path }}
+          DISCOVERY_ROOT: ${{ steps.capture.outputs.discovery-root }}
+          STATE_ROOT: ${{ steps.capture.outputs.state-root }}
+          SDK_VALIDATION_TOOLING: ${{ steps.tooling.outputs.tooling-policy }}
+          SDK_APPLE_VALIDATION_POLICY: ${{ steps.apple-policy.outputs.apple-policy }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trustedWorkflowSha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n "${CODEX_AGENT_COMPLETED_REUSE_POLICY:-}"
+          test ! -e "$RUNNER_TEMP/sdk-parity-reuse.log"
+          checkpoint=()
+          if [ -n "${SDK_CHECKPOINT:-}" ]; then
+            test -n "${CODEX_AGENT_CHECKPOINT_OWNER_POLICY:-}"
+            checkpoint+=(--sdk-checkpoint-owner "$CODEX_AGENT_CHECKPOINT_OWNER_POLICY" --sdk-checkpoint "$SDK_CHECKPOINT")
+          fi
+          python3 -B -m ci.sdk_completion --hosted-parity --discover-parity --plan "$PLAN" \
+            --discovery-root "$DISCOVERY_ROOT" --state-root "$STATE_ROOT" \
+            --sdk-original-workflow-sha "$TRUSTED_WORKFLOW_SHA" \
+            --sdk-validation-tooling "$SDK_VALIDATION_TOOLING" \
+            --sdk-apple-validation-policy "$SDK_APPLE_VALIDATION_POLICY" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --completed-frozen-policy "$CODEX_AGENT_COMPLETED_REUSE_POLICY" \
+            --github-output "$GITHUB_OUTPUT" ${checkpoint[@]+"${checkpoint[@]}"} \
+            | tee "$RUNNER_TEMP/sdk-parity-reuse.log"
       - name: Verify full parity from authenticated immutable phases
-        if: inputs.importedOnly && !inputs.reuseCompletedParity
+        if: inputs.importedOnly && !inputs.reuseCompletedParity && steps.discover-parity.outputs.reused != 'true'
         env:
           PLAN: ${{ steps.capture.outputs.plan-path }}
           DISCOVERY_ROOT: ${{ steps.capture.outputs.discovery-root }}
@@ -413,7 +448,7 @@ jobs:
             --parity-policy "$CODEX_AGENT_COMPLETED_SDK_PARITY_POLICY" ${checkpoint[@]+"${checkpoint[@]}"} \
             | tee "$RUNNER_TEMP/sdk-parity-reuse.log"
       - id: upload
-        if: ${{ !inputs.reuseCompletedParity }}
+        if: ${{ !inputs.reuseCompletedParity && steps.discover-parity.outputs.reused != 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -424,7 +459,7 @@ jobs:
           retention-days: 90
       - id: parity-output
         env:
-          REUSE_COMPLETED_PARITY: ${{ inputs.reuseCompletedParity }}
+          REUSE_COMPLETED_PARITY: ${{ inputs.reuseCompletedParity || steps.discover-parity.outputs.reused == 'true' }}
           FRESH_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
           FRESH_ARTIFACT_SHA256: ${{ steps.upload.outputs.artifact-digest }}
         run: |
@@ -473,7 +508,7 @@ jobs:
           PY
       - id: upload_report
         name: Preserve the successful current-run native parity report
-        if: inputs.reuseCompletedParity
+        if: inputs.reuseCompletedParity || steps.discover-parity.outputs.reused == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error

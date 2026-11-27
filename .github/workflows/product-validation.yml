@@ -15,6 +15,10 @@ on:
         description: Reuse the protected original parity report only for a complete native SDK state
         type: boolean
         default: false
+      discoverCompletedParity:
+        description: Reuse exact-input attested parity of this PR scope for a complete native SDK state, else run fresh
+        type: boolean
+        default: false
       sdkCheckpoints:
         description: Authenticate new collector results for the next registered consumer under protected owner policy
         type: boolean
@@ -7574,6 +7578,7 @@ jobs:
       nativeWrappers: ${{ fromJSON(needs.plan.outputs.native_wrappers) }}
       importedOnly: true
       reuseCompletedParity: ${{ inputs.reuseCompletedParity && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete == 'true' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse == 'true' }}
+      discoverCompletedParity: ${{ inputs.discoverCompletedParity && !inputs.reuseCompletedParity && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.complete == 'true' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.phase_count == '62' && fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs.full_reuse == 'true' }}
       planOutputs: ${{ toJSON(needs.plan.outputs) }}
       contractOutputs: ${{ toJSON(needs.contract-validation.outputs) }}
       sdkOutputs: ${{ toJSON(fromJSON(inputs.fullReuseAcceptanceOnly && toJSON(needs.sdk-completion-full-reuse) || toJSON(needs.sdk-completion)).outputs) }}
