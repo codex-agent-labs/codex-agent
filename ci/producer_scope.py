@@ -13,6 +13,12 @@ module binds a producer to its pull request through durable evidence instead:
 Every function is pure over caller-fetched JSON and fails closed with a
 structured ``ScopeRejected`` reason. Callers keep their own identity pins
 (T2/T5); this module only decides association and scope (T1, T3, T4, T6).
+
+A live association (open PR) is checked as strictly as a durable one, except
+for the owner-pinned PR 31 (merged, so no production run of it still carries
+a live association). ``admit()`` is called by discovered SDK parity reuse
+(``sdk_parity_reuse``). ``landed()`` (T4b) has no production caller yet: no
+path proposes cross-PR candidates, so cross-PR reuse is simply not offered.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 REPOSITORY = "codex-agent-labs/codex-agent"
 MAIN = "main"
+PINNED_PULL_REQUEST = 31
 CI_WORKFLOW = ".github/workflows/ci.yml"
 PRODUCER_EVENTS = frozenset({"pull_request", "merge_group", "workflow_dispatch"})
 CONSUMER_EVENTS = frozenset({"pull_request", "merge_group"})
@@ -37,7 +44,7 @@ REASONS = frozenset({
     "run-identity", "attempt", "job", "artifact-expired", "artifact-window", "artifact-identity",
     "association-missing", "association-ambiguous", "association-disagrees", "ancestry",
     "base-not-main", "not-merged", "merge-group-ref", "foreign-scope", "producer-tree-unapproved",
-    "consumer",
+    "consumer", "branch", "control-tree",
 })
 
 
@@ -109,7 +116,49 @@ def unassociated_pull_request_run(run: Mapping[str, Any]) -> bool:
     return run.get("event") == "pull_request" and run.get("pull_requests") == []
 
 
-def _live_binding(run, commit, *, expected_commit, pull_request):
+def association_reads_required(run: Mapping[str, Any], pull_request: Any) -> bool:
+    """Whether binding this pull_request run needs fresh association reads.
+
+    Always for a dropped (durable) association, and for every live association
+    except the owner-pinned PR 31, whose runs are all unassociated now.
+    """
+    return run.get("event") == "pull_request" and (
+        run.get("pull_requests") == [] or pull_request != PINNED_PULL_REQUEST)
+
+
+def association_reads(run: Mapping[str, Any], commit: Mapping[str, Any], *, pull_request: int,
+                      fetch: Callable[[str], Any]) -> dict[str, Any]:
+    """Fetch the association evidence for a live or dropped association."""
+    if run.get("pull_requests") == []:
+        return durable_association_reads(run, commit, pull_request=pull_request, fetch=fetch)
+    number = _positive(pull_request, "Association pull request")
+    head = _oid(run.get("head_sha"), "Run head")
+    parents = commit.get("parents")
+    if not isinstance(parents, list) or len(parents) != 2:
+        raise ScopeRejected("association-disagrees", "Tested commit is not a two-parent PR merge")
+    base = _oid(_sha(parents[0], "parent"), "Tested merge base")
+    pull = fetch(f"pulls/{number}")
+    if not isinstance(pull, dict):
+        raise ScopeRejected("malformed", "Pull request response is not an object")
+    pull_head = _oid(_sha(pull.get("head"), "head"), "Pull request head")
+    return {"pull": pull, "headAncestry": fetch(f"compare/{head}...{pull_head}?per_page=1"),
+            "baseAncestry": fetch(f"compare/{base}...{MAIN}?per_page=1")}
+
+
+def _require_run_branch(run: Mapping[str, Any], pull: Mapping[str, Any], label: str) -> None:
+    """I3: the run executed on the PR's own head branch and head repository."""
+    head = pull.get("head")
+    ref = head.get("ref") if isinstance(head, dict) else None
+    if not isinstance(ref, str) or not ref or run.get("head_branch") != ref:
+        raise ScopeRejected("branch", f"Run head branch is not the {label} head branch")
+    head_repo = run.get("head_repository")
+    if (not isinstance(head_repo, dict) or not isinstance(head.get("repo"), dict)
+            or head_repo.get("full_name") != head["repo"].get("full_name")):
+        raise ScopeRejected("repository", f"Run head repository is not the {label} head repository")
+
+
+def _live_binding(run, commit, *, expected_commit, pull_request, reads=None, signed=False,
+                  repository=REPOSITORY):
     requests = run.get("pull_requests")
     if not isinstance(requests, list):
         raise ValueError("Original CI pull requests must be an array")
@@ -135,8 +184,31 @@ def _live_binding(run, commit, *, expected_commit, pull_request):
     if [_sha(value, "parent") for value in parents] != [identities[0], original_head]:
         raise ScopeRejected("association-disagrees",
                             "Tested merge does not bind the original CI pull-request base/head")
-    return {"number": pull_request, "base": identities[0], "head": original_head,
-            "source": "pull_requests", "merged": None, "mergeCommit": None}
+    binding = {"number": pull_request, "base": identities[0], "head": original_head,
+               "source": "pull_requests", "merged": None, "mergeCommit": None}
+    if signed or not association_reads_required(run, pull_request):
+        # Signed: the signer bound it with fresh reads. PR 31: owner-pinned scope.
+        return binding
+    # I2: a live association gets the same branch, base and ancestry proof as
+    # a durable one, so a force-pushed-away head or a retargeted base rejects.
+    if not isinstance(reads, dict) or set(reads) != {"pull", "headAncestry", "baseAncestry"}:
+        raise ScopeRejected("association-missing",
+                            "Live pull-request association lacks its fresh association evidence")
+    require_same_repository_run(run, repository)
+    live_base = requests[0].get("base")
+    if not isinstance(live_base, dict) or live_base.get("ref") != MAIN:
+        raise ScopeRejected("base-not-main", f"Live pull-request association does not target {MAIN}")
+    pull = reads["pull"]
+    _require_same_repository_pull(pull, pull_request, repository, "Pull request")
+    if pull.get("state") != "open" or pull.get("merged") is not False:
+        raise ScopeRejected("association-disagrees", "Live pull-request association names a closed pull request")
+    _require_run_branch(run, pull, "pull request")
+    live_head = requests[0].get("head")
+    if not isinstance(live_head, dict) or live_head.get("ref") != pull["head"]["ref"]:
+        raise ScopeRejected("branch", "Live pull-request association names another head branch")
+    _require_ancestor(reads["headAncestry"], original_head, "Run head within its pull request")
+    _require_ancestor(reads["baseAncestry"], identities[0], f"Tested base on {MAIN}", reason="base-not-main")
+    return binding
 
 
 def durable_association_reads(run: Mapping[str, Any], commit: Mapping[str, Any], *, pull_request: int,
@@ -210,6 +282,11 @@ def durable_binding(run: Mapping[str, Any], commit: Mapping[str, Any], *, expect
     pull_head = pull["head"]["sha"]
     if listed[0]["head"]["sha"] != pull_head:
         raise ScopeRejected("association-disagrees", "Commit association and pull request disagree on head")
+    # I3: commits/{sha}/pulls names the PR that *landed* a commit, not the one
+    # whose run tested it; the run must have executed on that PR's own branch.
+    _require_run_branch(run, pull, "pull request")
+    if listed[0]["head"].get("ref") != pull["head"]["ref"]:
+        raise ScopeRejected("branch", "Commit association and pull request disagree on head branch")
     _require_ancestor(reads["headAncestry"], head, "Run head within its pull request")
     merged = pull.get("merged")
     merge_commit = None
@@ -235,11 +312,16 @@ def pull_request_binding(run: Mapping[str, Any], commit: Mapping[str, Any], *, e
     """Bind a pull_request run to PR N through its live or, if dropped, durable association.
 
     A non-empty live association is authoritative and must name N exactly once;
-    it never falls back to durable evidence (a disagreement rejects).
+    it never falls back to durable evidence (a disagreement rejects). Both
+    paths require the run's branch to be the PR head branch, the run head to
+    lie within the PR head, a ``main`` base and a tested base on ``main``.
     """
     requests = run.get("pull_requests")
     if requests != []:
-        return _live_binding(run, commit, expected_commit=expected_commit, pull_request=pull_request)
+        if reads is None and fetch is not None and association_reads_required(run, pull_request):
+            reads = association_reads(run, commit, pull_request=pull_request, fetch=fetch)
+        return _live_binding(run, commit, expected_commit=expected_commit, pull_request=pull_request,
+                             reads=reads, repository=repository)
     if reads is None:
         if fetch is None:
             raise ScopeRejected("association-ambiguous",
@@ -253,12 +335,15 @@ def signed_binding(run: Mapping[str, Any], commit: Mapping[str, Any], *, expecte
                    pull_request: int) -> dict[str, Any]:
     """Binding for observations inside a signed proof (no fresh API authority).
 
-    A live association is checked as before. An empty one is admitted only
-    because the signer ran ``pull_request_binding`` with durable evidence; the
+    A live association's merge parents are rechecked. Branch, base and
+    ancestry evidence (live or durable) is not re-read: it is admitted only
+    because the signer ran ``pull_request_binding`` with fresh reads in
+    ``product_reuse._observe_ci_producer_jobs`` before signing (N5). The
     tested merge must still bind the triggering head as its second parent.
     """
     if run.get("pull_requests") != []:
-        return _live_binding(run, commit, expected_commit=expected_commit, pull_request=pull_request)
+        return _live_binding(run, commit, expected_commit=expected_commit, pull_request=pull_request,
+                             signed=True)
     _positive(pull_request, "Association pull request")
     head = _oid(run.get("head_sha"), "Run head")
     parents = commit.get("parents")
@@ -270,16 +355,25 @@ def signed_binding(run: Mapping[str, Any], commit: Mapping[str, Any], *, expecte
             "merged": None, "mergeCommit": None}
 
 
+def queue_pull_request(ref: Any) -> int:
+    """PR N from ``gh-readonly-queue/main/pr-N-<sha>`` (optionally ``refs/heads/``-prefixed)."""
+    branch = ref.removeprefix("refs/heads/") if isinstance(ref, str) else None
+    match = _QUEUE_BRANCH.fullmatch(branch) if branch is not None else None
+    if match is None:
+        raise ScopeRejected("merge-group-ref", "Merge-group ref does not identify one pull request")
+    return int(match.group(1))
+
+
 def merge_group_scope(run: Mapping[str, Any]) -> int:
     """PR N of a merge_group producer from ``gh-readonly-queue/main/pr-N-<sha>``."""
     if run.get("event") != "merge_group":
         raise ScopeRejected("event", "Merge-group scope requires a merge_group run")
     branch = run.get("head_branch")
-    match = _QUEUE_BRANCH.fullmatch(branch) if isinstance(branch, str) else None
-    if match is None:
+    if not isinstance(branch, str) or branch.startswith("refs/"):
         raise ScopeRejected("merge-group-ref", "Merge-group head branch does not identify one pull request")
+    number = queue_pull_request(branch)
     _oid(run.get("head_sha"), "Merge-group head")
-    return int(match.group(1))
+    return number
 
 
 # Consumer scope ----------------------------------------------------------------
@@ -293,14 +387,19 @@ def consumer_scope(environ: Mapping[str, str]) -> dict[str, Any]:
         raise ScopeRejected("consumer", "Consumer lacks its runner ref")
     if event == "pull_request":
         match = _PULL_REF.fullmatch(ref)
+        if match is None:
+            raise ScopeRejected("consumer", "Consumer ref does not identify one pull request")
+        number = int(match.group(1))
     elif event == "merge_group":
-        match = _QUEUE_BRANCH.fullmatch(ref.removeprefix("refs/heads/")) if ref.startswith("refs/heads/") else None
+        if not ref.startswith("refs/heads/"):
+            raise ScopeRejected("merge-group-ref", "Consumer ref does not identify one pull request")
+        number = queue_pull_request(ref)
+        head_ref = environ.get("GITHUB_HEAD_REF")
+        if head_ref not in (None, "") and queue_pull_request(head_ref) != number:
+            raise ScopeRejected("merge-group-ref", "Consumer head ref names another merge-queue pull request")
     else:
         raise ScopeRejected("event", "Consumer event cannot carry reuse scope")
-    if match is None:
-        raise ScopeRejected("merge-group-ref" if event == "merge_group" else "consumer",
-                            "Consumer ref does not identify one pull request")
-    return {"repository": REPOSITORY, "event": event, "pullRequest": int(match.group(1))}
+    return {"repository": REPOSITORY, "event": event, "pullRequest": number}
 
 
 def require_consumer_environment(environ: Mapping[str, str], plan: Mapping[str, Any]) -> dict[str, Any]:
@@ -322,11 +421,13 @@ def current_pull_request(environ: Mapping[str, str]) -> int | None:
         return None
 
 
-def require_ci_consumer(consumer: Mapping[str, Any]) -> dict[str, Any]:
+def require_ci_consumer(consumer: Mapping[str, Any], environ: Mapping[str, str]) -> dict[str, Any]:
     """Completed-carrier consumer rule: same-repository CI, PR or merge queue.
 
-    The PR number is not consulted: carriers are owner-pinned (T4c) and the
-    consumer's code is bound to the approved verifier bytes separately.
+    The PR number is not compared to a scope: carriers are owner-pinned (T4c)
+    and the consumer's code is bound to the approved verifier bytes separately.
+    A merge_group consumer must execute on ``refs/heads/gh-readonly-queue/
+    main/pr-N-<sha>`` (N4); N is parsed from that ref and returned.
     """
     if not isinstance(consumer, dict) or consumer.get("kind") != "ci":
         raise ScopeRejected("consumer", "Completed frozen carrier requires a same-repository CI consumer")
@@ -337,7 +438,10 @@ def require_ci_consumer(consumer: Mapping[str, Any]) -> dict[str, Any]:
     if event == "pull_request" and type(number) is int and number > 0:
         return {"repository": REPOSITORY, "event": event, "pullRequest": number}
     if event == "merge_group" and number is None:
-        return {"repository": REPOSITORY, "event": event, "pullRequest": None}
+        scope = consumer_scope(environ)
+        if scope["event"] != "merge_group":
+            raise ScopeRejected("consumer", "Merge-group carrier consumer is not executing in a merge queue")
+        return {"repository": REPOSITORY, "event": event, "pullRequest": scope["pullRequest"]}
     raise ScopeRejected("event", "Completed frozen carrier requires a same-repository CI consumer")
 
 
@@ -347,6 +451,9 @@ def landed(binding: Mapping[str, Any], *, consumer_base: str, merge_to_consumer:
            producer_trees: Mapping[str, str], approved_trees: Iterable[Mapping[str, str]],
            main_trees: Iterable[Mapping[str, str]]) -> bool:
     """T4(b): PR M merged into main below the consumer, with an approved control tree.
+
+    NOT WIRED: no production caller exists yet (9.5.0). Nothing proposes
+    cross-PR candidates, so cross-PR reuse is not offered (fail closed).
 
     ``producer_trees`` holds the ``ci`` and ``.github`` tree IDs at the producer
     commit; it must equal an approved verifier's or a main first-parent commit's.
@@ -364,6 +471,28 @@ def landed(binding: Mapping[str, Any], *, consumer_base: str, merge_to_consumer:
         raise ScopeRejected("producer-tree-unapproved",
                             "Producer control tree is neither an approved verifier nor on main")
     return True
+
+
+# Control trees (B1) ---------------------------------------------------------------
+
+CONTROL_TREES = ("ci", ".github")
+
+
+def require_equal_control_trees(producer: Mapping[str, Any], consumer: Mapping[str, Any]) -> None:
+    """The producer's ``ci`` and ``.github`` tree IDs equal the consumer's exactly.
+
+    A PR-controlled producer ``ci.yml`` could otherwise define its own job graph
+    (for example a plain job carrying a pinned display name). Exact equality
+    only: no landed, approved or main alternative.
+    """
+    rows = []
+    for label, trees in (("Producer", producer), ("Consumer", consumer)):
+        if not isinstance(trees, dict) or set(trees) != set(CONTROL_TREES):
+            raise ScopeRejected("control-tree", f"{label} control trees are incomplete")
+        rows.append({field: _oid(trees[field], f"{label} {field} tree") for field in CONTROL_TREES})
+    if rows[0] != rows[1]:
+        differs = sorted(field for field in CONTROL_TREES if rows[0][field] != rows[1][field])
+        raise ScopeRejected("control-tree", f"Producer control trees differ from the consumer's: {differs}")
 
 
 # Composite admission (T1-T6) -----------------------------------------------------

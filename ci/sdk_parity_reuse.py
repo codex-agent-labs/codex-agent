@@ -15,6 +15,15 @@ exact consumed inputs:
 * the exact producer run/attempt, successful job, upload window, artifact ID
   and SHA-256, and the durable PR association (``producer_scope``).
 
+Before that gate, every proposal must also pass (9.5.0 security fixes):
+
+* ``producer_scope.admit`` (T1-T6: same repository, ``ci.yml``, allowed
+  event, exact attempt/job/artifact window, verified PR-N binding, same scope);
+* exact equality of the producer's ``ci`` and ``.github`` tree IDs with the
+  consumer revision's (B1). A PR-controlled producer ``ci.yml`` could define
+  its own job graph; with equal trees the producer ran the consumer's own
+  reviewed workflow definitions. No landed/main alternative applies here.
+
 Any rejection, missing candidate or API failure returns ``None``: the caller
 then runs parity fresh exactly as before. Nothing here grants acceptance.
 """
@@ -26,6 +35,7 @@ import io
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 import urllib.parse
@@ -86,11 +96,36 @@ def _read_plan(archive: bytes, *, tree: str, pull_request: int) -> str:
     return commit
 
 
+def git_control_trees(root: Path, revision: str) -> dict[str, str]:
+    """The ``ci`` and ``.github`` tree IDs at a local commit or tree object."""
+    if not isinstance(revision, str) or _OID.fullmatch(revision) is None:
+        raise producer_scope.ScopeRejected("control-tree", "Control-tree revision is not an exact object ID")
+    try:
+        listed = subprocess.run(
+            ["git", "-C", str(root), "ls-tree", "-d", "--full-tree", revision, "--",
+             *producer_scope.CONTROL_TREES],
+            check=True, capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        raise producer_scope.ScopeRejected("control-tree", f"Control trees of {revision} are unreadable") from error
+    trees = {}
+    for line in listed.splitlines():
+        meta, _, name = line.partition("\t")
+        fields = meta.split()
+        if len(fields) != 3 or fields[:2] != ["040000", "tree"] or name in trees:
+            raise producer_scope.ScopeRejected("control-tree", f"Control trees of {revision} are malformed")
+        trees[name] = fields[2]
+    return trees
+
+
 def candidates(pull_request: int, *, current_run: int, trusted_workflow_sha: str,
                api_json: Callable[[str], Any], jobs: Callable[[str], list],
                download: Callable[[Mapping[str, Any]], bytes],
+               association_fetch: Callable[[str], Any], consumer: Mapping[str, Any],
                reject: Callable[[str], None] = lambda reason: None) -> Iterator[dict[str, Any]]:
-    """Yield caller-shaped parity policies proposed from PR N's earlier CI runs, newest first."""
+    """Yield caller-shaped parity policies proposed from PR N's earlier CI runs, newest first.
+
+    Each yielded policy already passed ``producer_scope.admit`` for ``consumer``.
+    """
     if type(pull_request) is not int or pull_request < 1 or type(current_run) is not int or current_run < 1:
         raise ValueError("Parity discovery requires an exact PR scope and current run")
     if not isinstance(trusted_workflow_sha, str) or _OID.fullmatch(trusted_workflow_sha) is None:
@@ -110,13 +145,32 @@ def candidates(pull_request: int, *, current_run: int, trusted_workflow_sha: str
     for run in sorted((row for row in listed if isinstance(row, dict) and type(row.get("id")) is int
                        and 0 < row["id"] < current_run), key=lambda row: row["id"], reverse=True):
         try:
-            yield _candidate(run, pull_request, branch, trusted_workflow_sha, api_json, jobs, download)
+            yield _candidate(run, pull_request, branch, trusted_workflow_sha, api_json, jobs, download,
+                             association_fetch, consumer)
         except (ParityCandidateRejected, producer_scope.ScopeRejected, KeyError, ValueError,
                 zipfile.BadZipFile, json.JSONDecodeError) as error:
             reject(f"run {run['id']}: {error}")
 
 
-def _candidate(run, pull_request, branch, trusted_workflow_sha, api_json, jobs, download):
+def _admit(policy, attempt_jobs, parity, pull_request, api_json, association_fetch, consumer):
+    """I1: the composite T1-T6 rule over fresh attempt, commit and association reads."""
+    producer = policy["producer"]
+    run = api_json(f"{_API}/actions/runs/{producer['runId']}/attempts/{producer['runAttempt']}")
+    tested = api_json(f"{_API}/git/commits/{producer['commit']}")
+    if (not isinstance(run, dict) or not isinstance(tested, dict) or tested.get("sha") != producer["commit"]
+            or not isinstance(tested.get("tree"), dict) or tested["tree"].get("sha") != producer["tree"]):
+        raise ParityCandidateRejected("Parity candidate tested commit differs from its plan")
+    binding = producer_scope.pull_request_binding(run, tested, expected_commit=producer["commit"],
+                                                  pull_request=pull_request, fetch=association_fetch)
+    verdict = producer_scope.admit(producer, {
+        "run": run, "jobs": attempt_jobs, "artifact": parity, "jobName": PARITY_JOB, "binding": binding,
+    }, consumer)
+    if verdict.get("rule") != "same-scope" or verdict.get("scope") != pull_request:
+        raise ParityCandidateRejected("Parity candidate is not admitted within the consumer's own scope")
+
+
+def _candidate(run, pull_request, branch, trusted_workflow_sha, api_json, jobs, download,
+               association_fetch, consumer):
     producer_scope.require_same_repository_run(run)
     if (run.get("event") != "pull_request" or run.get("path") != producer_scope.CI_WORKFLOW
             or run.get("head_branch") != branch):
@@ -143,22 +197,25 @@ def _candidate(run, pull_request, branch, trusted_workflow_sha, api_json, jobs, 
     if type(latest) is not int or latest < 1:
         raise ParityCandidateRejected("Parity candidate run attempt is malformed")
     for attempt in range(latest, max(0, latest - MAX_ATTEMPTS), -1):
-        selected = [job for job in jobs(f"{_API}/actions/runs/{run_id}/attempts/{attempt}/jobs")
-                    if isinstance(job, dict) and job.get("name") == PARITY_JOB]
+        attempt_jobs = jobs(f"{_API}/actions/runs/{run_id}/attempts/{attempt}/jobs")
+        selected = [job for job in attempt_jobs if isinstance(job, dict) and job.get("name") == PARITY_JOB]
         if (len(selected) == 1 and selected[0].get("status") == "completed"
                 and selected[0].get("conclusion") == "success" and type(selected[0].get("id")) is int
                 and _time(selected[0].get("started_at")) <= created <= _time(selected[0].get("completed_at"))):
-            return {"schemaVersion": 1, "kind": "completed-sdk-parity", "producer": {
+            policy = {"schemaVersion": 1, "kind": "completed-sdk-parity", "producer": {
                 "repository": producer_scope.REPOSITORY, "workflowPath": producer_scope.CI_WORKFLOW,
                 "commit": commit, "tree": tree, "event": "pull_request", "pullRequest": pull_request,
                 "runId": run_id, "runAttempt": attempt},
                 "workflowSha": trusted_workflow_sha, "jobId": selected[0]["id"],
                 "artifactId": parity["id"], "artifactSha256": parity["digest"]}
+            _admit(policy, attempt_jobs, parity, pull_request, api_json, association_fetch, consumer)
+            return policy
     raise ParityCandidateRejected("Parity candidate has no successful parity job for its upload")
 
 
 def discover(root: Path, state: Any, *, environ: Mapping[str, str], token: str, trusted_workflow_sha: str,
              completed_parity: Callable[..., dict[str, Any]], api_json=None, jobs=None, download=None,
+             association_fetch=None, control_trees=None,
              log=lambda message: print(message, file=sys.stderr, flush=True)) -> dict[str, Any] | None:
     """Return authenticated original parity for the current state, or None to run fresh."""
     from products.inventory import canonical_json_bytes
@@ -167,15 +224,33 @@ def discover(root: Path, state: Any, *, environ: Mapping[str, str], token: str, 
         api_json = api_json or (lambda url: fetch(url, token))
         jobs = jobs or (lambda url: paginated_items(url, "jobs", token))
         download = download or (lambda artifact: download_artifact(artifact, token))
+    if association_fetch is None:
+        from product_reuse import _association_fetch
+        association_fetch = _association_fetch("https://api.github.com", producer_scope.REPOSITORY, token)
+    if control_trees is None:
+        control_trees = lambda revision: git_control_trees(root, revision)
     scope = reuse_scope(state.plan, state.consumer, environ)
+    consumer = producer_scope.consumer_scope(environ)
+    try:
+        consumer_trees = control_trees(state.plan["validationCommit"])
+    except producer_scope.ScopeRejected as error:
+        log(f"sdk-parity reuse: consumer control trees unavailable ({error}); running fresh")
+        return None
     current_run = state.consumer["producer"]["runId"]
     trials = 0
     for policy in candidates(scope, current_run=current_run, trusted_workflow_sha=trusted_workflow_sha,
                              api_json=api_json, jobs=jobs, download=download,
+                             association_fetch=association_fetch, consumer=consumer,
                              reject=lambda reason: log(f"sdk-parity reuse candidate rejected: {reason}")):
         if trials == MAX_TRIALS:
             break
         trials += 1
+        try:
+            # B1: the producer ran the consumer's own reviewed ci/ and .github trees.
+            producer_scope.require_equal_control_trees(control_trees(policy["producer"]["tree"]), consumer_trees)
+        except producer_scope.ScopeRejected as error:
+            log(f"sdk-parity reuse candidate rejected: run {policy['producer']['runId']}: {error}")
+            continue
         with tempfile.TemporaryDirectory(prefix="sdk-parity-discovered-") as temporary:
             path = Path(temporary).resolve() / "parity-policy.json"
             path.write_bytes(canonical_json_bytes(policy))

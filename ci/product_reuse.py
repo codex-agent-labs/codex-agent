@@ -396,11 +396,11 @@ def _observe_tested_commit(
     observations = _CI_OBSERVATIONS.get() if run.get("status") == "completed" else None
     def fetch():
         tested = api_json(f"{api}/repos/{repository}/git/commits/{expected_commit}", token)
-        # A merged PR's runs lose their live association; read its immutable
-        # durable evidence once with the commit, then validate it per caller.
-        reads = (producer_scope.durable_association_reads(run, tested, pull_request=pull_request,
+        # Durable (merged PR) or live (open PR) association evidence is read
+        # once with the commit, then validated per caller.
+        reads = (producer_scope.association_reads(run, tested, pull_request=pull_request,
                     fetch=_association_fetch(api, repository, token))
-                 if producer_scope.unassociated_pull_request_run(run) else None)
+                 if producer_scope.association_reads_required(run, pull_request) else None)
         return {"run": run, "testedCommit": tested, "association": reads}
     observed = _historical_ci_observation(observations or {},
         # Reads are shared per commit; durable evidence names its PR, so a caller

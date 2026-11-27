@@ -4,6 +4,7 @@ from copy import deepcopy
 import io
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,7 +24,11 @@ ROOT = Path(__file__).resolve().parents[2]
 REPO = producer_scope.REPOSITORY
 API = "https://api.github.com/repos/" + REPO
 PUBLISHER, TREE, COMMIT = "d" * 40, "b" * 40, "a" * 40
+RUN_HEAD, BASE_SHA, PR_HEAD, CONSUMER = "9" * 40, "8" * 40, "c" * 40, "e" * 40
 RUN = 500
+TREES = {"ci": "3" * 40, ".github": "4" * 40}
+ENVIRONMENT = {"GITHUB_REPOSITORY": REPO, "GITHUB_EVENT_NAME": "pull_request",
+               "GITHUB_REF": "refs/pull/33/merge", "GITHUB_SHA": CONSUMER}
 JOB_WINDOW = ("2026-11-20T12:00:00Z", "2026-11-20T13:00:00Z")
 
 
@@ -50,26 +55,61 @@ class GitHub:
     """Read-only canned API with mutable fixture state."""
 
     def __init__(self):
-        self.pull = {"number": 33, "head": {"ref": "phase95/0", "repo": {"full_name": REPO, "fork": False}}}
+        repo = {"full_name": REPO, "fork": False}
+        self.pull = {"number": 33, "state": "open", "merged": False,
+                     "head": {"ref": "phase95/0", "sha": PR_HEAD, "repo": dict(repo)},
+                     "base": {"ref": "main", "repo": dict(repo)}}
         self.runs = [{"id": RUN, "run_attempt": 2, "event": "pull_request", "path": producer_scope.CI_WORKFLOW,
-                      "head_branch": "phase95/0", "repository": {"full_name": REPO, "fork": False},
-                      "head_repository": {"full_name": REPO, "fork": False}}]
+                      "head_branch": "phase95/0", "head_sha": RUN_HEAD,
+                      "pull_requests": [{"number": 33, "base": {"sha": BASE_SHA, "ref": "main"},
+                                         "head": {"sha": RUN_HEAD, "ref": "phase95/0"}}],
+                      "repository": dict(repo), "head_repository": dict(repo)}]
+        self.attempt_runs = {}
         self.artifacts = [
-            {"id": 71, "name": reuse.PARITY_PREFIX + TREE, "expired": False,
+            {"id": 71, "name": reuse.PARITY_PREFIX + TREE, "expired": False, "workflow_run": {"id": RUN},
              "digest": "sha256:" + "7" * 64, "created_at": "2026-11-20T12:30:00Z"},
-            {"id": 72, "name": reuse.PLAN_PREFIX + TREE, "expired": False, "digest": "sha256:" + "8" * 64}]
+            {"id": 72, "name": reuse.PLAN_PREFIX + TREE, "expired": False, "workflow_run": {"id": RUN},
+             "digest": "sha256:" + "8" * 64}]
         self.jobs = {2: [self.job("success")], 1: []}
         self.plan = plan_archive()
+        self.tested = {"sha": COMMIT, "tree": {"sha": TREE}, "parents": [{"sha": BASE_SHA}, {"sha": RUN_HEAD}]}
+        self.association = {
+            "pulls/33": self.pull,
+            f"compare/{RUN_HEAD}...{PR_HEAD}?per_page=1": self.compare(RUN_HEAD),
+            f"compare/{BASE_SHA}...main?per_page=1": self.compare(BASE_SHA)}
+        self.trees = {CONSUMER: dict(TREES), TREE: dict(TREES)}
         self.reads = []
+
+    @staticmethod
+    def compare(ancestor, *, behind=0, status="ahead"):
+        return {"status": status, "behind_by": behind, "base_commit": {"sha": ancestor},
+                "merge_base_commit": {"sha": ancestor}}
 
     def job(self, conclusion, window=JOB_WINDOW):
         return {"id": 90, "name": reuse.PARITY_JOB, "status": "completed", "conclusion": conclusion,
-                "started_at": window[0], "completed_at": window[1]}
+                "run_id": RUN, "head_sha": RUN_HEAD, "started_at": window[0], "completed_at": window[1]}
+
+    def association_fetch(self, path):
+        self.reads.append(path)
+        if path not in self.association:
+            raise AssertionError(path)
+        return deepcopy(self.association[path])
+
+    def control_trees(self, revision):
+        if revision not in self.trees:
+            raise producer_scope.ScopeRejected("control-tree", f"no tree for {revision}")
+        return deepcopy(self.trees[revision])
 
     def api_json(self, url):
         self.reads.append(url)
         if url == f"{API}/pulls/33":
             return deepcopy(self.pull)
+        match = re.fullmatch(re.escape(f"{API}/actions/runs/{RUN}/attempts/") + r"([0-9]+)", url)
+        if match:
+            attempt = int(match.group(1))
+            return deepcopy(self.attempt_runs.get(attempt, {**self.runs[0], "run_attempt": attempt}))
+        if url == f"{API}/git/commits/{COMMIT}":
+            return deepcopy(self.tested)
         if url.startswith(f"{API}/actions/workflows/ci.yml/runs?"):
             self.query = url
             return {"workflow_runs": deepcopy(self.runs)}
@@ -90,6 +130,7 @@ class GitHub:
     def candidates(self, rejected=None):
         return list(reuse.candidates(33, current_run=RUN + 10, trusted_workflow_sha=PUBLISHER,
             api_json=self.api_json, jobs=self.list_jobs, download=self.download,
+            association_fetch=self.association_fetch, consumer=producer_scope.consumer_scope(ENVIRONMENT),
             reject=(rejected.append if rejected is not None else lambda reason: None)))
 
 
@@ -150,6 +191,36 @@ class CandidateTest(unittest.TestCase):
         with self.assertRaises(producer_scope.ScopeRejected):
             github.candidates()
 
+    def test_admit_runs_t1_to_t6_on_fresh_attempt_reads(self):
+        # I1: producer_scope.admit gates every proposal (T2 workflow, T3 event,
+        # exact attempt/job identity, verified PR-N binding).
+        cases = {
+            "attempt path": lambda github: github.attempt_runs.update({2: {**github.runs[0], "path":
+                                                                          ".github/workflows/other.yml"}}),
+            "attempt event": lambda github: github.attempt_runs.update({2: {**github.runs[0], "event": "push"}}),
+            "attempt fork": lambda github: github.attempt_runs.update({2: {**github.runs[0], "head_repository":
+                                                                          {"full_name": REPO, "fork": True}}}),
+            "job of another head": lambda github: github.jobs[2][0].update(head_sha="1" * 40),
+            "artifact of another run": lambda github: github.artifacts[0].update(workflow_run={"id": RUN + 1}),
+            "tested tree": lambda github: github.tested["tree"].update(sha="1" * 40),
+            "force-pushed head": lambda github: github.association.update({
+                f"compare/{RUN_HEAD}...{PR_HEAD}?per_page=1": github.compare(PR_HEAD, behind=2, status="diverged")}),
+            "retargeted base": lambda github: github.runs[0]["pull_requests"][0]["base"].update(ref="evil-base"),
+            "base off main": lambda github: github.association.update({
+                f"compare/{BASE_SHA}...main?per_page=1": github.compare("1" * 40, behind=1, status="diverged")}),
+        }
+        for name, change in cases.items():
+            with self.subTest(name):
+                github = GitHub()
+                change(github)
+                rejected = []
+                self.assertEqual([], github.candidates(rejected))
+                self.assertEqual(1, len(rejected), rejected)
+        github = GitHub()
+        github.candidates()
+        self.assertIn(f"{API}/actions/runs/{RUN}/attempts/2", github.reads)
+        self.assertIn(f"compare/{RUN_HEAD}...{PR_HEAD}?per_page=1", github.reads)
+
 
 class ScopeTest(unittest.TestCase):
     def environment(self, event, ref):
@@ -194,8 +265,7 @@ def parity_archive(path, originals):
 class DiscoveryTest(unittest.TestCase):
     """Discovery feeds the real ``_completed_parity`` exact-input gate."""
 
-    environment = {"GITHUB_REPOSITORY": REPO, "GITHUB_EVENT_NAME": "pull_request",
-                   "GITHUB_REF": "refs/pull/33/merge", "GITHUB_SHA": "e" * 40}
+    environment = ENVIRONMENT
 
     def state(self):
         plan = {"repository": REPO, "event": "pull_request", "pullRequest": 33, "validationCommit": "e" * 40}
@@ -203,7 +273,7 @@ class DiscoveryTest(unittest.TestCase):
                                                "runId": RUN + 10, "runAttempt": 1}}
         return Mock(plan=plan, consumer=consumer, prior={"phases": deepcopy(ROWS)})
 
-    def discover(self, root, *, archive_rows=ROWS, recipe="original", github=None):
+    def discover(self, root, *, archive_rows=ROWS, recipe="original", github=None, logs=None):
         github = github or GitHub()
         raw = parity_archive(root / "original.zip", deepcopy(archive_rows))
         github.artifacts[0]["digest"] = completion.sha256_bytes(raw)
@@ -223,7 +293,9 @@ class DiscoveryTest(unittest.TestCase):
                 patch("subprocess.Popen", side_effect=AssertionError("no fresh parity process")):
             result = reuse.discover(root, self.state(), environ=self.environment, token="fixture",
                 trusted_workflow_sha=PUBLISHER, completed_parity=completion._completed_parity,
-                api_json=github.api_json, jobs=github.list_jobs, download=github.download, log=lambda _: None)
+                api_json=github.api_json, jobs=github.list_jobs, download=github.download,
+                association_fetch=github.association_fetch, control_trees=github.control_trees,
+                log=(logs.append if logs is not None else lambda _: None))
         return result, observe
 
     def test_identical_inputs_reuse_without_a_fresh_parity_process(self):
@@ -243,6 +315,30 @@ class DiscoveryTest(unittest.TestCase):
                 self.assertIsNone(self.discover(Path(temporary).resolve(), archive_rows=changed)[0])
         with tempfile.TemporaryDirectory() as temporary:
             self.assertIsNone(self.discover(Path(temporary).resolve(), recipe="changed")[0])
+
+    def test_producer_control_trees_must_equal_the_consumer_exactly(self):
+        # B1: a producer whose ci.yml (spoofed or renamed parity job) or other
+        # .github / ci content differs runs fresh, before _completed_parity.
+        for name, trees in (("spoofed ci.yml (.github differs)", {**TREES, ".github": "5" * 40}),
+                            ("ci differs", {**TREES, "ci": "6" * 40}),
+                            ("producer tree unreadable", None)):
+            github = GitHub()
+            if trees is None:
+                del github.trees[TREE]
+            else:
+                github.trees[TREE] = trees
+            logs = []
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                result, observe = self.discover(Path(temporary).resolve(), github=github, logs=logs)
+                self.assertIsNone(result)
+                observe.assert_not_called()
+                self.assertTrue(any("[scope:control-tree]" in line for line in logs), logs)
+        github = GitHub()
+        del github.trees[CONSUMER]
+        with tempfile.TemporaryDirectory() as temporary:
+            result, observe = self.discover(Path(temporary).resolve(), github=github)
+        self.assertIsNone(result)
+        observe.assert_not_called()
 
     def test_no_candidate_runs_fresh(self):
         github = GitHub()
@@ -267,6 +363,45 @@ class DiscoveryTest(unittest.TestCase):
                                                  admitted_scope=scope)
 
 
+class GitControlTreeTest(unittest.TestCase):
+    def git(self, root, *args):
+        return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, text=True,
+                              env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+                                   "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+                                   "HOME": str(root), "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"}
+                              ).stdout.strip()
+
+    def test_spoofed_parity_job_in_ci_yml_changes_the_github_tree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self.git(root, "init", "-q")
+            (root / "ci").mkdir()
+            (root / "ci" / "tool.py").write_text("print('x')\n")
+            (root / ".github" / "workflows").mkdir(parents=True)
+            ci = root / ".github" / "workflows" / "ci.yml"
+            ci.write_text("jobs:\n  product-validation:\n    uses: ./.github/workflows/product-validation.yml\n")
+            self.git(root, "add", "-A")
+            self.git(root, "commit", "-q", "-m", "reviewed")
+            reviewed = self.git(root, "rev-parse", "HEAD")
+            ci.write_text("jobs:\n  pv:\n    uses: ./.github/workflows/product-validation.yml\n"
+                          "  fake:\n    name: product-validation / sdk-parity / sdk-parity\n"
+                          "    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n")
+            self.git(root, "commit", "-q", "-am", "spoof")
+            spoofed_tree = self.git(root, "rev-parse", "HEAD^{tree}")
+            consumer = reuse.git_control_trees(root, reviewed)
+            producer = reuse.git_control_trees(root, spoofed_tree)  # tree objects work too
+            self.assertEqual(set(producer_scope.CONTROL_TREES), set(producer))
+            self.assertEqual(consumer["ci"], producer["ci"])
+            self.assertNotEqual(consumer[".github"], producer[".github"])
+            with self.assertRaises(producer_scope.ScopeRejected) as raised:
+                producer_scope.require_equal_control_trees(producer, consumer)
+            self.assertEqual("control-tree", raised.exception.reason)
+            self.assertIn("'.github'", str(raised.exception))
+            for revision in ("1" * 40, "HEAD"):
+                with self.subTest(revision=revision), self.assertRaises(producer_scope.ScopeRejected):
+                    reuse.git_control_trees(root, revision)
+
+
 class WiringTest(unittest.TestCase):
     def test_kill_switch_and_fresh_fallback_wiring(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -277,11 +412,15 @@ class WiringTest(unittest.TestCase):
                       validation)
         parity = (ROOT / ".github/workflows/sdk-binding-parity.yml").read_text()
         self.assertIn("if: inputs.importedOnly && !inputs.reuseCompletedParity && inputs.discoverCompletedParity", parity)
-        self.assertIn("if: inputs.importedOnly && !inputs.reuseCompletedParity && "
-                      "steps.discover-parity.outputs.reused != 'true'", parity)
-        self.assertIn("if: ${{ !inputs.reuseCompletedParity && steps.discover-parity.outputs.reused != 'true' }}", parity)
-        self.assertIn("REUSE_COMPLETED_PARITY: ${{ inputs.reuseCompletedParity || "
-                      "steps.discover-parity.outputs.reused == 'true' }}", parity)
+        # N2: reuse only on outcome success AND reused == 'true'; anything else is fresh.
+        reused = "(steps.discover-parity.outcome == 'success' && steps.discover-parity.outputs.reused == 'true')"
+        self.assertIn(f"if: inputs.importedOnly && !inputs.reuseCompletedParity && !{reused}", parity)
+        self.assertIn(f"if: ${{{{ !inputs.reuseCompletedParity && !{reused} }}}}", parity)
+        self.assertIn(f"REUSE_COMPLETED_PARITY: ${{{{ inputs.reuseCompletedParity || {reused} }}}}", parity)
+        self.assertIn(f"if: inputs.reuseCompletedParity || {reused}", parity)
+        self.assertEqual(5, parity.count(reused))
+        self.assertNotIn("steps.discover-parity.outputs.reused != 'true'", parity)
+        self.assertEqual(5, parity.count("steps.discover-parity.outputs.reused"))
         self.assertIn("--hosted-parity --discover-parity", parity)
 
     def test_cli_routes_reused_false_on_any_discovery_failure(self):

@@ -21,10 +21,30 @@ def repository(fork=False, name=REPO):
     return {"full_name": name, "fork": fork}
 
 
-def pull(number=31, *, merged=True, state="closed", head=PR_HEAD, fork=False, head_name=REPO, base_ref="main"):
+def pull(number=31, *, merged=True, state="closed", head=PR_HEAD, fork=False, head_name=REPO, base_ref="main",
+         ref="feature"):
     return {"number": number, "state": state, "merged": merged, "merge_commit_sha": MERGE if merged else None,
-            "head": {"sha": head, "repo": repository(fork, head_name)},
+            "head": {"sha": head, "ref": ref, "repo": repository(fork, head_name)},
             "base": {"ref": base_ref, "repo": repository()}}
+
+
+def live(number=33, *, base_ref="main", ref="feature"):
+    return {"number": number, "base": {"sha": BASE, "ref": base_ref}, "head": {"sha": HEAD, "ref": ref}}
+
+
+class LiveFetcher:
+    """Canned reads for a live (open) PR 33 association."""
+
+    def __init__(self, **overrides):
+        self.responses = {
+            "pulls/33": pull(33, merged=False, state="open"),
+            f"compare/{HEAD}...{PR_HEAD}?per_page=1": compare(HEAD),
+            f"compare/{BASE}...main?per_page=1": compare(BASE),
+        }
+        self.responses.update(overrides)
+        self.paths = []
+
+    __call__ = lambda self, path: Fetcher.__call__(self, path)
 
 
 def compare(ancestor, *, behind=0, status="ahead"):
@@ -133,6 +153,48 @@ class AssociationTest(unittest.TestCase):
         self.rejected("association-disagrees", bind, tested=commit((BASE, "1" * 40)))
         self.rejected("association-disagrees", bind, tested=commit((BASE,)))
 
+    def test_live_association_of_a_new_pr_gets_durable_strength_checks(self):
+        fetch = LiveFetcher()
+        binding = bind(run(pull_requests=[live()]), fetch=fetch, number=33)
+        self.assertEqual(("pull_requests", 33, HEAD), (binding["source"], binding["number"], binding["head"]))
+        self.assertEqual({"pulls/33", f"compare/{HEAD}...{PR_HEAD}?per_page=1", f"compare/{BASE}...main?per_page=1"},
+                         set(fetch.paths))
+        # Without fresh association evidence a live new-PR association rejects.
+        self.rejected("association-missing", scope.pull_request_binding, run(pull_requests=[live()]), commit(),
+                      expected_commit=TESTED, pull_request=33)
+
+    def test_live_force_pushed_away_head_rejects(self):
+        # I2: the run head is no longer within the PR head after a force-push.
+        self.rejected("ancestry", bind, run(pull_requests=[live()]), number=33, fetch=LiveFetcher(**{
+            f"compare/{HEAD}...{PR_HEAD}?per_page=1": compare(PR_HEAD, behind=2, status="diverged")}))
+
+    def test_live_retargeted_base_rejects(self):
+        # I2: produced against evil-base, then retargeted to main.
+        self.rejected("base-not-main", bind, run(pull_requests=[live(base_ref="evil-base")]), number=33,
+                      fetch=LiveFetcher())
+        self.rejected("base-not-main", bind, run(pull_requests=[live()]), number=33, fetch=LiveFetcher(**{
+            f"compare/{BASE}...main?per_page=1": compare("1" * 40, behind=1, status="diverged")}))
+        self.rejected("base-not-main", bind, run(pull_requests=[live()]), number=33, fetch=LiveFetcher(**{
+            "pulls/33": pull(33, merged=False, state="open", base_ref="evil-base")}))
+
+    def test_live_run_must_execute_on_the_pr_head_branch(self):
+        # I3 (live): another branch or a closed PR rejects.
+        self.rejected("branch", bind, run(pull_requests=[live()], branch="other"), number=33, fetch=LiveFetcher())
+        self.rejected("branch", bind, run(pull_requests=[live(ref="other")]), number=33, fetch=LiveFetcher())
+        self.rejected("association-disagrees", bind, run(pull_requests=[live()]), number=33,
+                      fetch=LiveFetcher(**{"pulls/33": pull(33)}))
+
+    def test_durable_run_of_another_pr_landed_through_n_rejects(self):
+        # I3: PR M's run on branch m tested C; C later landed on main via PR N
+        # (branch n), so commits/C/pulls names N. M's run is not N's.
+        landed_via_n = pull(ref="n")
+        self.rejected("branch", bind, run(branch="m"), fetch=Fetcher(**{
+            f"commits/{HEAD}/pulls": [landed_via_n], "pulls/31": landed_via_n}))
+        self.rejected("branch", bind, run(branch="n"), fetch=Fetcher(**{
+            f"commits/{HEAD}/pulls": [pull(ref="m")], "pulls/31": landed_via_n}))
+        self.rejected("repository", bind, run(branch="feature") | {
+            "head_repository": repository(name="codex-agent-labs/other")}, fetch=Fetcher())
+
     def test_signed_binding_requires_head_as_second_parent(self):
         self.assertEqual("signed", scope.signed_binding(run(), commit(), expected_commit=TESTED,
                                                          pull_request=31)["source"])
@@ -173,9 +235,23 @@ class ConsumerScopeTest(unittest.TestCase):
 
     def test_ci_consumer_rule(self):
         producer = {"repository": REPO, "event": "pull_request", "pullRequest": 33}
-        self.assertEqual(33, scope.require_ci_consumer({"kind": "ci", "producer": producer})["pullRequest"])
-        self.assertIsNone(scope.require_ci_consumer({"kind": "ci", "producer": {
-            **producer, "event": "merge_group", "pullRequest": None}})["pullRequest"])
+        queue = self.environment("merge_group", f"refs/heads/gh-readonly-queue/main/pr-33-{BASE}")
+        self.assertEqual(33, scope.require_ci_consumer({"kind": "ci", "producer": producer}, {})["pullRequest"])
+        merge_group = {"kind": "ci", "producer": {**producer, "event": "merge_group", "pullRequest": None}}
+        self.assertEqual(33, scope.require_ci_consumer(merge_group, queue)["pullRequest"])
+        # N4: a merge_group consumer must execute on its queue ref.
+        for environment, reason in (
+                ({}, "repository"),
+                (self.environment("merge_group", "refs/heads/feature"), "merge-group-ref"),
+                (self.environment("merge_group", f"refs/heads/gh-readonly-queue/main/pr-33x-{BASE}"),
+                 "merge-group-ref"),
+                ({**queue, "GITHUB_HEAD_REF": f"refs/heads/gh-readonly-queue/main/pr-34-{BASE}"},
+                 "merge-group-ref"),
+                (self.environment("pull_request", "refs/pull/33/merge"), "consumer"),
+                (self.environment("push", "refs/heads/main"), "event")):
+            with self.subTest(environment=environment), self.assertRaises(scope.ScopeRejected) as raised:
+                scope.require_ci_consumer(merge_group, environment)
+            self.assertEqual(reason, raised.exception.reason)
         for consumer in ({"kind": "local", "producer": producer},
                          {"kind": "ci", "producer": {**producer, "repository": "fork/codex-agent"}},
                          {"kind": "ci", "producer": {**producer, "pullRequest": None}},
@@ -183,7 +259,7 @@ class ConsumerScopeTest(unittest.TestCase):
                          {"kind": "ci", "producer": {**producer, "event": "workflow_dispatch", "pullRequest": None}},
                          {"kind": "ci", "producer": {**producer, "event": "push", "pullRequest": None}}):
             with self.subTest(consumer=consumer), self.assertRaises(scope.ScopeRejected):
-                scope.require_ci_consumer(consumer)
+                scope.require_ci_consumer(consumer, queue)
 
 
 class AdmitTest(unittest.TestCase):
@@ -287,6 +363,20 @@ class AdmitTest(unittest.TestCase):
         self.rejected("event", consumer={**self.consumer, "event": "workflow_dispatch"}, pins=pins)
         self.rejected("association-missing", observation={**self.observation, "binding": {
             **self.observation["binding"], "number": 32}})
+
+
+class ControlTreeTest(unittest.TestCase):
+    TREES = {"ci": "3" * 40, ".github": "4" * 40}
+
+    def test_exact_equality_only(self):
+        scope.require_equal_control_trees(dict(self.TREES), dict(self.TREES))
+        for changed in ({"ci": "5" * 40}, {".github": "5" * 40}):
+            with self.subTest(changed=changed), self.assertRaises(scope.ScopeRejected) as raised:
+                scope.require_equal_control_trees({**self.TREES, **changed}, self.TREES)
+            self.assertEqual("control-tree", raised.exception.reason)
+        for trees in ({"ci": "3" * 40}, {**self.TREES, "extra": "6" * 40}, {**self.TREES, "ci": "short"}):
+            with self.subTest(trees=trees), self.assertRaises(scope.ScopeRejected):
+                scope.require_equal_control_trees(trees, self.TREES)
 
 
 class RegistrationTest(unittest.TestCase):

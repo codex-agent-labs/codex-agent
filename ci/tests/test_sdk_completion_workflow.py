@@ -553,7 +553,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         self.assertIn("if: inputs.importedOnly && inputs.reuseCompletedParity",
                       self.parity_step("name: Verify approved original parity against current native state"))
         # 9.5.0: exact-input discovery (vars == 'auto') may also skip the fresh upload.
-        self.assertIn("if: ${{ !inputs.reuseCompletedParity && steps.discover-parity.outputs.reused != 'true' }}",
+        self.assertIn("if: ${{ !inputs.reuseCompletedParity && !(steps.discover-parity.outcome == 'success' && steps.discover-parity.outputs.reused == 'true') }}",
                       self.parity_step("id: upload"))
         self.assertIn("plan-directory: ${{ runner.temp }}/sdk-parity-plan", self.parity_step("id: capture"))
         self.assertIn("path: ${{ runner.temp }}/sdk-parity-plan", source)
@@ -866,7 +866,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
     def test_current_report_and_distinct_acceptance_cli_preserve_legacy_branch(self):
         parity = (ROOT / '.github/workflows/sdk-binding-parity.yml').read_text()
         upload = self.parity_step('id: upload_report')
-        self.assertIn("if: inputs.reuseCompletedParity || steps.discover-parity.outputs.reused == 'true'\n", upload)
+        self.assertIn("if: inputs.reuseCompletedParity || (steps.discover-parity.outcome == 'success' && steps.discover-parity.outputs.reused == 'true')\n", upload)
         self.assertIn('path: ${{ runner.temp }}/hosted-parity-report/hosted-parity-report.json', upload)
         self.assertIn('overwrite: false', upload)
         self.assertLess(parity.index('id: parity-output'), parity.index('id: upload_report'))

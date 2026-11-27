@@ -75,7 +75,7 @@ jobs:
       artifact_run_id: ${{ steps.parity-output.outputs.artifact_run_id }}
       report_sha256: ${{ steps.parity-output.outputs.report_sha256 }}
       report_artifact_id: ${{ steps.upload_report.outputs.artifact-id }}
-      report_artifact_sha256: ${{ (inputs.reuseCompletedParity || steps.discover-parity.outputs.reused == 'true') && format('sha256:{0}', steps.upload_report.outputs.artifact-digest) || '' }}
+      report_artifact_sha256: ${{ (inputs.reuseCompletedParity || (steps.discover-parity.outcome == 'success' && steps.discover-parity.outputs.reused == 'true')) && format('sha256:{0}', steps.upload_report.outputs.artifact-digest) || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -365,7 +365,8 @@ jobs:
       - name: Reuse exact-input parity attested in this PR scope
         id: discover-parity
         if: inputs.importedOnly && !inputs.reuseCompletedParity && inputs.discoverCompletedParity
-        # Discovery only proposes reuse; any failure leaves reused unset and runs fresh.
+        # Discovery only proposes reuse. Later steps reuse only on outcome success AND
+        # reused == 'true'; any other result (failure, skip, false) runs fresh.
         continue-on-error: true
         env:
           PLAN: ${{ steps.capture.outputs.plan-path }}
@@ -394,7 +395,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT" ${checkpoint[@]+"${checkpoint[@]}"} \
             | tee "$RUNNER_TEMP/sdk-parity-reuse.log"
       - name: Verify full parity from authenticated immutable phases
-        if: inputs.importedOnly && !inputs.reuseCompletedParity && steps.discover-parity.outputs.reused != 'true'
+        if: inputs.importedOnly && !inputs.reuseCompletedParity && !(steps.discover-parity.outcome == 'success' && steps.discover-parity.outputs.reused == 'true')
         env:
           PLAN: ${{ steps.capture.outputs.plan-path }}
           DISCOVERY_ROOT: ${{ steps.capture.outputs.discovery-root }}
@@ -448,7 +449,7 @@ jobs:
             --parity-policy "$CODEX_AGENT_COMPLETED_SDK_PARITY_POLICY" ${checkpoint[@]+"${checkpoint[@]}"} \
             | tee "$RUNNER_TEMP/sdk-parity-reuse.log"
       - id: upload
-        if: ${{ !inputs.reuseCompletedParity && steps.discover-parity.outputs.reused != 'true' }}
+        if: ${{ !inputs.reuseCompletedParity && !(steps.discover-parity.outcome == 'success' && steps.discover-parity.outputs.reused == 'true') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error
@@ -459,7 +460,7 @@ jobs:
           retention-days: 90
       - id: parity-output
         env:
-          REUSE_COMPLETED_PARITY: ${{ inputs.reuseCompletedParity || steps.discover-parity.outputs.reused == 'true' }}
+          REUSE_COMPLETED_PARITY: ${{ inputs.reuseCompletedParity || (steps.discover-parity.outcome == 'success' && steps.discover-parity.outputs.reused == 'true') }}
           FRESH_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
           FRESH_ARTIFACT_SHA256: ${{ steps.upload.outputs.artifact-digest }}
         run: |
@@ -508,7 +509,7 @@ jobs:
           PY
       - id: upload_report
         name: Preserve the successful current-run native parity report
-        if: inputs.reuseCompletedParity || steps.discover-parity.outputs.reused == 'true'
+        if: inputs.reuseCompletedParity || (steps.discover-parity.outcome == 'success' && steps.discover-parity.outputs.reused == 'true')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           if-no-files-found: error

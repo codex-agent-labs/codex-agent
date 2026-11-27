@@ -970,7 +970,17 @@ class CompletedFrozenReuseTest(unittest.TestCase):
             # Owner-pinned carriers admit any same-repository PR or merge-queue
             # CI consumer (9.5.0 T4c); foreign repositories and other events still reject.
             cap.check_consumer({"kind": "ci", "producer": {**producer, "pullRequest": 32}})
-            cap.check_consumer({"kind": "ci", "producer": {**producer, "event": "merge_group", "pullRequest": None}})
+            queue = {"GITHUB_REPOSITORY": "codex-agent-labs/codex-agent", "GITHUB_EVENT_NAME": "merge_group",
+                     "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-32-" + "f" * 40}
+            merge_group = {"kind": "ci", "producer": {**producer, "event": "merge_group", "pullRequest": None}}
+            with patch.dict(os.environ, queue, clear=True):
+                cap.check_consumer(merge_group)
+            # N4: a merge_group consumer must execute on its merge-queue ref.
+            for environment in ({}, {**queue, "GITHUB_REF": "refs/heads/feature"},
+                                {**queue, "GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF": "refs/pull/32/merge"}):
+                with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True), \
+                        self.assertRaises(qualification.QualificationIncompatible):
+                    cap.check_consumer(merge_group)
             for foreign in ({**producer, "repository": "fork-owner/codex-agent"},
                             {**producer, "event": "push", "pullRequest": None},
                             {**producer, "event": "merge_group"}):

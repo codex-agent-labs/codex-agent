@@ -975,8 +975,9 @@ class CompletedFrozenReuse:
             self._checkpoint.check(consumer=consumer)
         # Owner-pinned carriers (T4c) admit any same-repository PR or merge-queue
         # CI consumer; consumer code is bound to the approved verifier separately.
+        import os
         try:
-            producer_scope.require_ci_consumer(consumer)
+            producer_scope.require_ci_consumer(consumer, os.environ)
         except producer_scope.ScopeRejected as error:
             raise QualificationIncompatible(str(error)) from None
 
@@ -2193,7 +2194,8 @@ def _observe_current_completed_issuer(root, revision, token):
         raise ValueError("Ordinary completed issuer differs from its current protected run")
     products._require_ci_workflow_reference(run, f"{REPOSITORY}/{ISSUER_WORKFLOW}@{revision}", revision)
     products._validate_tested_commit(run, source, expected_commit=revision, expected_tree=tree,
-        pull_request=pull_request)
+        pull_request=pull_request,
+        association=products._association_fetch("https://api.github.com", REPOSITORY, token))
     selected = products._matching_ci_jobs(jobs, "completion / completed-sdk")
     if (len(selected) != 1 or selected[0].get("run_id") != run_id
             or selected[0].get("head_sha") != run["head_sha"]
