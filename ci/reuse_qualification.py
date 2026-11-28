@@ -646,12 +646,12 @@ def _observe_completed_sdk_resume(spec, token):
     return artifact, observed, locator
 
 
-def _observe_completed_sdk_original(original, plan, producer, token):
+def _observe_completed_sdk_original(original, plan, producer, token, *, pinned=None):
     import product_reuse as products
     source = {"kind": "sdk-binary", "receipt": original["receipt"],
               "artifactId": original["artifactId"], "artifactSha256": original["artifactSha256"]}
     artifact, _, observed, workflow = products._authenticate_runtime_original_reference_source(
-        plan, producer, source, trusted_workflow_sha=original["workflowSha"], token=token)
+        plan, producer, source, trusted_workflow_sha=original["workflowSha"], token=token, pinned=pinned)
     instance = products._identity(original["receipt"])
     selected = products._matching_ci_jobs(observed[0]["jobs"],
         "product-validation / sdk-sdk-ios-binary-ios", expected_build_key=original["receipt"]["buildKey"])
@@ -1016,6 +1016,58 @@ class CompletedFrozenReuse:
                 return producer_scope.PINNED_PULL_REQUEST
         return self._admitted_scope()
 
+    def pins_original(self, source):
+        """Whether ``source`` is one of this capability's owner-pinned (T4c) originals.
+
+        Provenance: the capability exists only through ``fetch_completed_frozen``
+        (private ``_COMPLETED_FROZEN`` witness), which natively authenticates the
+        spec named by the reuse-authority completed-reuse policy (installed by
+        ``restore-reuse-qualification@reuse-authority``). Its originals are the
+        native-qualified locators of that spec: phase and Contract bodies, and
+        the pinned SDK original. A source is pinned only when its exact receipt
+        digest, artifact ID and artifact digest are one of them; anything else
+        keeps the ordinary same-PR rule.
+        """
+        self._values()
+        if not isinstance(source, dict) or not isinstance(source.get("receipt"), dict):
+            return False
+        pinned = set()
+        for receipt_sha256, raw in self._bodies:
+            artifact = load_canonical_json_bytes(raw)["locator"]["artifact"]
+            pinned.add((receipt_sha256, artifact["id"], artifact["digest"]))
+        if self._contract is not None:
+            contract = load_canonical_json_bytes(self._contract)
+            pinned.add((sha256_bytes(canonical_json_bytes(contract["receipt"])),
+                        contract["locator"]["artifact"]["id"], contract["locator"]["artifact"]["digest"]))
+        if self._sdk is not None:
+            original = load_canonical_json_bytes(self._sdk).get("original")
+            if original is not None:
+                pinned.add((sha256_bytes(canonical_json_bytes(original["receipt"])),
+                            original["artifactId"], original["artifactSha256"]))
+        key = (sha256_bytes(canonical_json_bytes(source["receipt"])), source.get("artifactId"),
+               source.get("artifactSha256"))
+        return key in pinned
+
+    def pins_receipt(self, receipt):
+        """Whether ``receipt`` is an owner-pinned (T4c) PR-31 phase receipt of this capability.
+
+        Same provenance as ``pins_original``: the exact receipt digest of one of
+        the natively authenticated spec's eligible phases.
+        """
+        _, phases = self._values()
+        if not isinstance(receipt, dict) or not isinstance(receipt.get("producer"), dict):
+            return False
+        producer = receipt["producer"]
+        instance = tuple(receipt.get(field) for field in _PHASE_FIELDS)
+        from products.registry import PhaseInstanceId
+        try:
+            expected = phases.get(PhaseInstanceId(*instance))
+        except TypeError:
+            return False
+        return (expected is not None and producer.get("event") == "pull_request"
+                and producer.get("pullRequest") == producer_scope.PINNED_PULL_REQUEST
+                and sha256_bytes(canonical_json_bytes(receipt)) == expected["receiptSha256"])
+
     def check_consumer(self, consumer):
         self._values()
         if self._checkpoint is not None:
@@ -1203,7 +1255,7 @@ class CompletedFrozenReuse:
             raise ValueError("Completed SDK admission must precede its consumer")
         artifact, _, locator = _observe_completed_sdk_resume(sdk["spec"], token)
         original_artifact, observed, original_locator = _observe_completed_sdk_original(
-            sdk["original"], plan, producer, token)
+            sdk["original"], plan, producer, token, pinned=self)
         if locator != sdk["proof"]["source"] or original_locator != sdk["proof"]["original"]:
             raise ValueError("Completed SDK fresh native identity changed")
         return artifact, original_artifact, observed
@@ -1313,7 +1365,7 @@ class CompletedFrozenReuse:
                   "artifactId": body["locator"]["artifact"]["id"],
                   "artifactSha256": body["locator"]["artifact"]["digest"]}
         artifact, _, observed, workflow = products._authenticate_runtime_original_reference_source(
-            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token)
+            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=self)
         instance = products._identity(envelope["receipt"])
         name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
         matches = products._matching_ci_jobs(observed[0]["jobs"], name)
@@ -1343,7 +1395,7 @@ class CompletedFrozenReuse:
                   "artifactId": original["locator"]["artifact"]["id"],
                   "artifactSha256": original["locator"]["artifact"]["digest"]}
         artifact, _, observed, workflow = products._authenticate_runtime_original_reference_source(
-            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token)
+            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=self)
         instance = products._identity(original["receipt"])
         name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
         jobs = products._matching_ci_jobs(observed[0]["jobs"], name)
