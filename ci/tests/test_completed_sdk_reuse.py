@@ -1632,9 +1632,8 @@ class SameRunCheckpointRequestTest(unittest.TestCase):
 
     def setUp(self):
         # Completed reuse requests carry the consumer's admitted PR scope (9.5.0).
-        self.enterContext(patch.dict(os.environ, {"GITHUB_REPOSITORY": "codex-agent-labs/codex-agent",
-                                                  "GITHUB_EVENT_NAME": "pull_request",
-                                                  "GITHUB_REF": "refs/pull/31/merge"}))
+        from ci.tests.runner_scope import pin_runner_scope
+        pin_runner_scope(self)
         import reuse_qualification as native
         from types import SimpleNamespace
         from products.registry import PhaseInstanceId
