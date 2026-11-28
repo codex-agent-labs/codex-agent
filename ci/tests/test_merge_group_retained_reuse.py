@@ -1163,5 +1163,176 @@ class RetainedValidationSignerTest(unittest.TestCase):
                 self.assertEqual({"publish": "false"}, self.run_publication(**overrides))
 
 
+# Every job of product-validation.yml that may mint an OIDC token, and why that
+# token can never sign for code of the tested tree (security review I1). A
+# certificate's SAN names only the workflow file, so any job here signs as
+# product-validation.yml@reuse-authority unless it is a reusable-workflow call.
+ID_TOKEN_JOBS = {
+    # Signs only API-confirmed digests; no checkout and no repository file runs.
+    "retained-validation-record": "no-tested-code",
+    # The tested tree is checked out as data only; the protected publisher's code runs isolated.
+    "workflow-source-record": "protected-source",
+    # Reusable-workflow calls: their jobs sign as the called workflow, not as product-validation.yml.
+    "android-runtime-evidence": "reusable-call",
+    **{f"sdk-checkpoint-{index}": "reusable-call" for index in (4, 6, 7, 8, 9, 10)},
+    "sdk-core-binary-wave": "reusable-call",
+    "sdk-android-validation-result": "reusable-call",
+    "sdk-android-metadata-result": "reusable-call",
+}
+_PINNED_ACTIONS = {
+    "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1",
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+}
+# Anything in a run script that could execute or source a file of the checkout.
+_REPOSITORY_EXECUTION = re.compile(
+    r"(?:^|[\s;&|('\"])(?:\./|ci/|\.github/|tests/|bash\s+[^-\s]|sh\s+[^-\s]|source\s|\.\s+\S|make\b|"
+    r"gradlew|npm\b|npx\b|pip\b|python3?\s+(?!-I\s+-B\s+-\s))|PYTHONPATH|sys\.path|working-directory")
+
+
+def workflow_jobs(text):
+    body = text.split("\njobs:\n", 1)[1]
+    parts = re.split(r"(?m)^  ([a-z][a-z0-9-]*):\n", "\n" + body)
+    return dict(zip(parts[1::2], parts[2::2]))
+
+
+def job_permissions(job):
+    block = re.search(r"(?m)^    permissions:\n((?:      .*\n)*)", job)
+    return dict(line.strip().split(": ", 1) for line in block[1].splitlines()) if block else {}
+
+
+def job_steps(job):
+    steps = job.split("\n    steps:\n", 1)
+    return [] if len(steps) == 1 else ["      - " + step for step in steps[1].split("\n      - ")[1:]]
+
+
+def step_uses(step):
+    return [re.sub(r"^(?:-\s*)?uses:\s*", "", line.strip()) for line in step.splitlines()
+            if re.match(r"^\s*(?:-\s*)?uses:\s", line)]
+
+
+def run_script(step):
+    """A step's shell script without its whole-line comments."""
+    script = step.split("        run: |\n", 1)[1] if "        run: |\n" in step else (
+        re.search(r"(?m)^        run: (.+)$", step) or [None, ""])[1]
+    return "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+
+
+def id_token_violations(text):
+    """Every reason a job holding ``id-token: write`` could sign for tested-tree code."""
+    jobs, violations = workflow_jobs(text), []
+    top = text.split("\njobs:\n", 1)[0]
+    if "id-token" in top or "attestations" in top:
+        violations.append(("<workflow>", "workflow-level permissions grant a token"))
+    granted = {name for name, job in jobs.items() if job_permissions(job).get("id-token") == "write"}
+    for name in sorted(granted - set(ID_TOKEN_JOBS)):
+        violations.append((name, "new id-token job not on the reviewed allowlist"))
+    for name in sorted(granted & set(ID_TOKEN_JOBS)):
+        job, kind = jobs[name], ID_TOKEN_JOBS[name]
+        caller = re.search(r"(?m)^    uses: (\S+)$", job)
+        if kind == "reusable-call":
+            target = caller[1] if caller else ""
+            local = re.fullmatch(r"\./\.github/workflows/([a-z0-9-]+\.yml)", target)
+            remote = re.fullmatch(r"codex-agent-labs/codex-agent/\.github/workflows/([a-z0-9-]+\.yml)@reuse-authority",
+                                  target)
+            called = (local or remote)[1] if (local or remote) else None
+            if called is None or called == "product-validation.yml" or "\n    steps:\n" in job:
+                violations.append((name, "is not a call to another reviewed workflow"))
+            continue
+        if caller is not None:
+            violations.append((name, "signing job unexpectedly calls a workflow"))
+        for step in job_steps(job):
+            for action in step_uses(step):
+                if action not in _PINNED_ACTIONS:
+                    violations.append((name, f"runs an unreviewed or local action {action}"))
+                elif action.startswith("actions/checkout@") and kind != "protected-source":
+                    violations.append((name, "checks out a tree"))
+            if re.search(r"(?m)^\s*(?:-\s*)?(?:shell|working-directory):", step):
+                violations.append((name, "changes the shell or working directory"))
+            script = run_script(step)
+            if kind == "protected-source":
+                # Only the protected publisher's checkout executes, isolated; the tested tree is data.
+                script = re.sub(r"python3 -I -B protected-source/[A-Za-z0-9_./-]+\.py", "PROTECTED",
+                                script).replace("--source tested-tree", "--source DATA")
+                if re.search(r"(?m)^\s+path: tested-tree$", step) and re.search(r"(?m)^\s+ref:", step):
+                    violations.append((name, "tested-tree checkout pins a ref"))
+                if re.search(r"(?m)^\s+path: protected-source$", step) and (
+                        "ref: ${{ fromJSON(toJSON(job)).workflow_sha }}" not in step
+                        or "repository: ${{ fromJSON(toJSON(job)).workflow_repository }}" not in step):
+                    violations.append((name, "protected checkout is not the job's own workflow commit"))
+                if "tested-tree" in script:
+                    violations.append((name, "a run step touches the tested tree"))
+            if _REPOSITORY_EXECUTION.search(script) or "secrets." in step or "actions/cache" in step:
+                violations.append((name, "a run step may execute repository code"))
+    return violations
+
+
+class IdTokenSignerInvariantTest(unittest.TestCase):
+    """I1: no job that can sign as product-validation.yml ever executes the tested tree."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (ROOT / ".github/workflows/product-validation.yml").read_text()
+
+    def test_every_id_token_job_is_reviewed_and_cannot_run_tested_code(self):
+        self.assertEqual([], id_token_violations(self.text))
+        jobs = workflow_jobs(self.text)
+        granted = {name for name, job in jobs.items() if job_permissions(job).get("id-token") == "write"}
+        self.assertEqual(set(ID_TOKEN_JOBS), granted)
+        # Only the two own-identity signers hold attestations without delegating to another workflow.
+        signers = {name for name in granted if "\n    steps:\n" in jobs[name]}
+        self.assertEqual({"retained-validation-record", "workflow-source-record"}, signers)
+        # Same SAN, distinct subjects: the source-check signer only ever attests its own record file,
+        # never a name the merge-queue verifier accepts.
+        source = jobs["workflow-source-record"]
+        self.assertIn("subject-path: ${{ runner.temp }}/source-check-record/source-checks.json", source)
+        self.assertNotIn("subject-name", source)
+        self.assertEqual(2, jobs["retained-validation-record"].count("subject-name: "))
+
+    def test_detector_flags_new_or_widened_signers(self):
+        def add(job):
+            return self.text.rstrip("\n") + "\n" + textwrap.indent(textwrap.dedent(job).strip("\n"), "  ") + "\n"
+
+        fresh = """
+            evil-signer:
+              runs-on: ubuntu-24.04
+              permissions:
+                id-token: write
+              steps:
+                - run: echo hi
+            """
+        self.assertIn(("evil-signer", "new id-token job not on the reviewed allowlist"), id_token_violations(add(fresh)))
+        record = workflow_jobs(self.text)["retained-validation-record"]
+        mutations = {
+            "checkout": record.replace("    steps:\n", "    steps:\n      - uses: actions/checkout@"
+                                       "3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n", 1),
+            "local action": record.replace("    steps:\n", "    steps:\n      - uses: ./.github/actions/x\n", 1),
+            "ci script": record.replace("    steps:\n", "    steps:\n      - run: python3 ci/impact.py\n", 1),
+            "repo shell": record.replace("    steps:\n", "    steps:\n      - run: bash .github/x.sh\n", 1),
+            "relative exec": record.replace("    steps:\n", "    steps:\n      - run: ./gradlew check\n", 1),
+            "pythonpath": record.replace("    steps:\n", "    steps:\n      - run: PYTHONPATH=. python3 -c 1\n", 1),
+            "working dir": record.replace("    steps:\n", "    steps:\n      - working-directory: x\n"
+                                          "        run: echo\n", 1),
+        }
+        for label, job in mutations.items():
+            with self.subTest(label=label):
+                self.assertNotEqual([], id_token_violations(self.text.replace(record, job, 1)))
+        caller = workflow_jobs(self.text)["sdk-checkpoint-4"]
+        for target in ("codex-agent-labs/codex-agent/.github/workflows/product-validation.yml@reuse-authority",
+                       "./.github/workflows/product-validation.yml", "evil/repo/.github/workflows/x.yml@main"):
+            with self.subTest(target=target):
+                job = re.sub(r"(?m)^    uses: \S+$", "    uses: " + target, caller, count=1)
+                self.assertNotEqual([], id_token_violations(self.text.replace(caller, job, 1)))
+        source = workflow_jobs(self.text)["workflow-source-record"]
+        for old, new in (("python3 -I -B protected-source/", "python3 -B tested-tree/"),
+                         ("          path: tested-tree\n", "          path: tested-tree\n          ref: main\n")):
+            with self.subTest(old=old):
+                self.assertIn(old, source)
+                self.assertNotEqual([], id_token_violations(self.text.replace(source, source.replace(old, new), 1)))
+        top = self.text.replace("permissions:\n  actions: read\n", "permissions:\n  id-token: write\n  actions: read\n", 1)
+        self.assertIn(("<workflow>", "workflow-level permissions grant a token"), id_token_violations(top))
+
+
 if __name__ == "__main__":
     unittest.main()
