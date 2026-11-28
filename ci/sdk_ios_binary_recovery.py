@@ -357,10 +357,24 @@ def replay_prior_ios_binary(capture_root, artifact_root, *, plan_path, repositor
     transport = require_exact_keys(products._canonical_control(
         capture / "capture-transport.json", "Prior SDK transport"),
         {"artifact", "captureProducer", "observed", f"{phase}ReceiptSha256"}, "Prior SDK transport")
+    # T4: the prior SDK capture is the consumer's own PR scope, or a completed
+    # owner-pinned (T4c) PR-31 phase receipt of the native capability (exact frozen
+    # receipt digest) for the consumer that capability admits; the completed branch
+    # below then binds the record, envelope and original upload.
+    pinned_original = False
+    if completed_frozen is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        pinned_original = (type(completed_frozen) is CompletedFrozenReuse
+                           and instance in completed_frozen.completed_phases()
+                           and completed_frozen.pins_receipt(receipt))
+        if pinned_original:
+            completed_frozen.check_consumer({"kind": "ci", "producer": consumer_producer})
+            if plan.get("pullRequest") != completed_frozen.admitted_pull_request():
+                raise ValueError("Pinned SDK consumer plan differs from its admitted scope [scope:consumer]")
     if (transport["captureProducer"] != producer
             or transport[f"{phase}ReceiptSha256"] != sha256_bytes(raw)
             or receipt["trustDomain"] != "development" or producer["event"] != "pull_request"
-            or producer["pullRequest"] != plan["pullRequest"]):
+            or not pinned_original and producer["pullRequest"] != plan["pullRequest"]):
         raise ValueError("Prior SDK retained upload differs from freshly observed original")
     artifact_fields = ("id", "name", "digest", "size_in_bytes", "created_at",
                        "archive_download_url", "workflow_run")
