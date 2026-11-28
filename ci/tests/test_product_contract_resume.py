@@ -18,6 +18,7 @@ from ci.products.plan import plan_phase
 from ci.products.selection import phase_git_inventory
 from ci.products.signatures import generate_development_key, sign_manifest
 from ci.tests.test_contract_execution_closure import execution_closure_fixture
+from ci.tests.runner_scope import pin_runner_scope
 from ci.tests import test_product_reuse_adapter as fixture
 
 
@@ -146,6 +147,7 @@ class ContractProductResumeTest(unittest.TestCase):
         return stack
 
     def setUp(self):
+        pin_runner_scope(self)
         self.scratch = Path(tempfile.mkdtemp(prefix="resume-case-", dir=self.repository))
         self.addCleanup(shutil.rmtree, self.scratch)
 

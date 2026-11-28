@@ -167,7 +167,7 @@ def completed_native_runtime_provider(completed, request, *, plan, producer, tru
                 raise ValueError("Completed native bootstrap Contract coverage changed")
         source = sources[PhaseInstanceId("runtime", target, "metadata", target)]
         artifact, _, observed, workflow = products._authenticate_runtime_original_reference_source(
-            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token)
+            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=completed)
         name = f"product-validation / runtime-{target}-metadata-{target}"
         job, = products._matching_ci_jobs(observed[0]["jobs"], name)
         locator = products._runtime_original_locator(artifact, workflow, products._identity(source["receipt"]), job)

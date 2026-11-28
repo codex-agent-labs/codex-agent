@@ -70,7 +70,8 @@ def _copy_outputs(state, instance, kinds, destination, stack, workflow, token):
     if envelope is None or len(sources) != 1 or sources[0]["receipt"] != envelope["receipt"]:
         raise ValueError("Retained source test lacks its exact native original")
     artifact, _, observed, original_workflow = products._authenticate_runtime_original_reference_source(
-        state.plan, state.consumer["producer"], sources[0], trusted_workflow_sha=workflow, token=token)
+        state.plan, state.consumer["producer"], sources[0], trusted_workflow_sha=workflow, token=token,
+        pinned=native)
     jobs = products._matching_ci_jobs(observed[0]["jobs"],
         f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}")
     if len(jobs) != 1:

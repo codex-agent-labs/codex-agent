@@ -72,6 +72,8 @@ class CompletedSdkControlsTest(unittest.TestCase):
             self.assertEqual(completed.LIMIT, completed._object_limit(changed))
 
     def setUp(self):
+        from ci.tests.runner_scope import pin_runner_scope
+        pin_runner_scope(self)
         def record(receipt):
             return {**{field: receipt[field] for field in completed.IDENTITY},
                 'buildKey': receipt['buildKey'], 'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)),
@@ -502,6 +504,60 @@ class CompletedSdkControlsTest(unittest.TestCase):
                     native._fetch_completed_sdk(Path('unused'), pins, root=Path.cwd(),
                         revision=revision, frozen={}, token='synthetic')
             validate.assert_not_called()
+
+    def test_prior_ios_binary_admits_pinned_pr31_receipt_for_the_consumer_scope(self):
+        """T4 at the prior SDK gate: a PR-37 consumer of the pinned PR-31 iOS binary."""
+        import reuse_qualification as native
+        import sdk_ios_binary_recovery as recovery
+        receipt = deepcopy(self.receipt)
+        receipt.update(component='sdk-ios', phase='binary', target='ios')
+        receipt['buildKey'] = compute_build_key(**{field: receipt[field] for field in (*completed.IDENTITY, 'inputs')})
+        self.assertEqual(('pull_request', 31), (receipt['producer']['event'], receipt['producer']['pullRequest']))
+        record = {**{field: receipt[field] for field in completed.IDENTITY}, 'buildKey': receipt['buildKey'],
+            'receiptSha256': sha256_bytes(canonical_json_bytes(receipt)), 'objectSha256': sha256_bytes(b'object')}
+        cap = native.CompletedFrozenReuse({'request': self.base['request'], 'expectedResult': {'phases': [record]}},
+            [receipt], native._COMPLETED_FROZEN, revision=receipt['producer']['commit'],
+            sdk={'spec': {'completedPhase': record}, 'extension': capture_extension([record], [receipt])})
+        consumer = {**receipt['producer'], 'pullRequest': 37, 'runId': receipt['producer']['runId'] + 1}
+        artifact = {'id': 71, 'name': 'synthetic-original', 'digest': sha256_bytes(b'original')}
+        plan = {'repository': receipt['producer']['repository'], 'event': 'pull_request',
+                'remoteBuildAuthorized': True, 'pullRequest': 37}
+        runner = {'GITHUB_REPOSITORY': receipt['producer']['repository'], 'GITHUB_ACTIONS': 'true',
+                  'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_REF': 'refs/pull/37/merge'}
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root = Path(temporary).resolve()
+            plan_path = root / 'plan.json'
+            plan_path.write_bytes(canonical_json_bytes(plan))
+            stack.enter_context(patch.dict(os.environ, runner, clear=True))
+            stack.enter_context(patch.object(native.CompletedFrozenReuse, 'observe_sdk', return_value=({}, artifact, [])))
+            validated = stack.enter_context(patch.object(recovery.products, '_validate_plan', return_value=plan))
+            stack.enter_context(patch.object(recovery, '_require_prior', side_effect=AssertionError('legacy lookup')))
+            stack.enter_context(patch.object(recovery, 'locate_original_apple_upload',
+                                             side_effect=AssertionError('legacy locator')))
+            records = recovery.capture_completed_ios_binary(root / 'prior-failed-sdk', root,
+                completed_frozen=cap, plan=plan, producer=consumer, token='synthetic')
+            self.assertEqual(1, len(records))
+
+            def replay(current=plan):
+                return recovery.replay_prior_ios_binary(root / 'prior-failed-sdk', root,
+                    plan_path=plan_path, repository_root=root, plan=current, consumer_producer=consumer,
+                    trusted_workflow_sha='a' * 40, token='synthetic', environ={}, completed_frozen=cap)
+
+            # The pinned completed receipt reaches the completed branch for the PR-37 consumer.
+            self.assertEqual(records, replay())
+            # An unpinned PR-31 receipt keeps the same-PR rule.
+            with patch.object(native.CompletedFrozenReuse, 'pins_receipt', return_value=False), \
+                    self.assertRaisesRegex(ValueError, 'differs from freshly observed original'):
+                replay()
+            # A receipt outside the completed phases is not pinned.
+            with patch.object(native.CompletedFrozenReuse, 'completed_phases', return_value=frozenset()), \
+                    self.assertRaisesRegex(ValueError, 'differs from freshly observed original'):
+                replay()
+            # A plan for PR 38 under the PR-37 runner is rejected.
+            plan_38 = {**plan, 'pullRequest': 38}
+            validated.return_value = plan_38
+            with self.assertRaisesRegex(ValueError, r'admitted scope \[scope:consumer\]'):
+                replay(plan_38)
 
     def test_native_csharp_and_ios_controls_route_without_body_or_gate_replay(self):
         import reuse_qualification as native
@@ -1631,6 +1687,9 @@ class SameRunCheckpointRequestTest(unittest.TestCase):
     sdk-ios-metadata replayed the earlier product-resume request without them."""
 
     def setUp(self):
+        # Completed reuse requests carry the consumer's admitted PR scope (9.5.0).
+        from ci.tests.runner_scope import pin_runner_scope
+        pin_runner_scope(self)
         import reuse_qualification as native
         from types import SimpleNamespace
         from products.registry import PhaseInstanceId

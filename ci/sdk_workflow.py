@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 if __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -93,6 +94,66 @@ gradle.projectsEvaluated {
     }
 }
 """
+
+# Measurement only (9.5.0): one line per finished Gradle task in the consumer
+# log; never changes task inputs, outcomes, caching or parallelism.
+PARITY_TASK_TIMING_INIT = """\
+import org.gradle.api.services.BuildService
+import org.gradle.api.services.BuildServiceParameters
+import org.gradle.build.event.BuildEventsListenerRegistry
+import org.gradle.tooling.events.FinishEvent
+import org.gradle.tooling.events.OperationCompletionListener
+import org.gradle.tooling.events.task.TaskFailureResult
+import org.gradle.tooling.events.task.TaskFinishEvent
+import org.gradle.tooling.events.task.TaskSkippedResult
+import org.gradle.tooling.events.task.TaskSuccessResult
+
+// Measurement only: prints one line per finished task; never changes task inputs or outcomes.
+abstract class CodexAgentParityTaskTiming implements BuildService<BuildServiceParameters.None>, OperationCompletionListener {
+    @Override
+    void onFinish(FinishEvent event) {
+        if (!(event instanceof TaskFinishEvent)) {
+            return
+        }
+        def result = event.result
+        def outcome = result instanceof TaskFailureResult ? 'failed'
+            : result instanceof TaskSkippedResult ? 'skipped'
+            : result instanceof TaskSuccessResult && result.upToDate ? 'up-to-date'
+            : result instanceof TaskSuccessResult && result.fromCache ? 'from-cache' : 'executed'
+        def seconds = String.format(Locale.ROOT, '%.3f', (result.endTime - result.startTime) / 1000.0d)
+        System.out.println("parity-task-timing ${event.descriptor.taskPath} ${seconds} ${outcome}")
+        System.out.flush()
+    }
+}
+
+try {
+    def timing = gradle.sharedServices.registerIfAbsent('codexAgentParityTaskTiming', CodexAgentParityTaskTiming) {}
+    gradle.services.get(BuildEventsListenerRegistry).onTaskCompletion(timing)
+} catch (Exception error) {
+    System.err.println("parity-task-timing unavailable: ${error.class.name}")
+}
+"""
+_TASK_TIMING = b"parity-task-timing "
+
+
+def _parity_timing(step, language, started, **fields):
+    """Structured job-log (stderr) timing; never written to published evidence."""
+    record = {"step": step, "language": language, **fields,
+              "elapsedSeconds": round(time.monotonic() - started, 3)}
+    print("parity-timing " + json.dumps(record, sort_keys=True, separators=(",", ":")), file=sys.stderr, flush=True)
+
+
+def _echo_task_timings(log, start):
+    """Copy this invocation's Gradle per-task timing lines from the consumer log to stderr."""
+    end = log.tell()
+    log.flush()
+    log.seek(start)
+    for line in log:
+        if line.startswith(_TASK_TIMING):
+            sys.stderr.write(line.decode("utf-8", errors="replace"))
+    sys.stderr.flush()
+    log.seek(end)
+
 
 IMPORTED_NATIVE_PARITY_INIT = """\
 gradle.projectsEvaluated {
@@ -695,14 +756,22 @@ def execute_java_parity(plan, discovery, state, destination, *, repository_root,
         result.mkdir()
         script = private / "parity.init.gradle"
         script.write_text(IMPORTED_JAVA_PARITY_INIT)
+        timing = private / "task-timing.init.gradle"
+        timing.write_text(PARITY_TASK_TIMING_INIT)
         with verified_java_parity_inputs(plan, discovery, state, repository_root=root,
                 environ=environ, **policies) as inputs:
             command = [str(root / "gradlew"), ":codex-agent-core:verifyJavaBindingParity",
+                "--init-script", str(timing),
                 "--init-script", str(script), "-DcodexAgent.importedJavaParityInputs=" + str(inputs),
                 "-DcodexAgent.importedJavaParityOutput=" + str(result / "java-parity.json"),
                 "--offline", "--no-configuration-cache", "--no-build-cache", "--console=plain"]
-            with (result / "consumer.log").open("wb") as log:
-                subprocess.run(command, cwd=root, env=dict(environ), check=True, stdout=log, stderr=subprocess.STDOUT)
+            with (result / "consumer.log").open("w+b") as log:
+                started = time.monotonic()
+                try:
+                    subprocess.run(command, cwd=root, env=dict(environ), check=True, stdout=log, stderr=subprocess.STDOUT)
+                finally:
+                    _parity_timing("gradle", "java", started, task=":codex-agent-core:verifyJavaBindingParity")
+                    _echo_task_timings(log, 0)
             read_regular_file_bytes(result / "java-parity.json", reject_symlink_parents=True)
         publish_regular_tree(result, destination)
     return {"evidence": destination / "java-parity.json"}
@@ -772,17 +841,22 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
                     keyring=Path(tooling["keyring"]) if tooling["keyring"] else None,
                     keys_directory=Path(tooling["keysDirectory"]) if tooling["keysDirectory"] else None,
                     policy_revision=revision), (result / "consumer.log").open("w+b") as log:
-            def run(command):
+            def run(command, step, language=None, **fields):
                 start = log.tell()
+                started = time.monotonic()
                 try:
                     subprocess.run(command, cwd=root, env=dict(environ), check=True,
                         stdout=log, stderr=subprocess.STDOUT)
                 except subprocess.CalledProcessError:
+                    _parity_timing(step, language, started, **fields, failed=True)
                     log.flush()
                     log.seek(max(start, log.tell() - 65536))
                     print("Parity consumer diagnostics (last 64 KiB):\n" +
                           log.read().decode("utf-8", errors="replace"), file=sys.stderr)
                     raise
+                _parity_timing(step, language, started, **fields)
+                if step == "gradle":
+                    _echo_task_timings(log, start)
 
             def copy(source, target):
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -820,7 +894,7 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
                             ("staged-sdks", "stagedSdks"), ("validation-stage", "validationStage"),
                             ("validation-receipt", "validationReceipt")):
                         command.extend(("--" + option, str(primary[key])))
-                    run(command)
+                    run(command, "verify-native", language)
                     for relative in ("bootstrap/bootstrap-evidence.json", "validation-source/capability-claims.tsv"):
                         source_file = handoff / relative
                         copy(source_file, selected / relative)
@@ -841,10 +915,13 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
             native_script.write_text(IMPORTED_NATIVE_PARITY_INIT)
             java_script = private / "java.init.gradle"
             java_script.write_text(IMPORTED_JAVA_PARITY_INIT)
+            timing_script = private / "task-timing.init.gradle"
+            timing_script.write_text(PARITY_TASK_TIMING_INIT)
             config_path = private / "native.json"
             config_path.write_bytes(canonical_json_bytes(config))
             gradle = [str(root / "gradlew"),
                 "--init-script", str(root / ".github/actions/run-ci-lane/release_tooling.init.gradle"),
+                "--init-script", str(timing_script),
                 "--no-configuration-cache",
                 "--no-build-cache", "--max-workers=4", "--console=plain"]
             native_options = ["--init-script", str(native_script),
@@ -852,8 +929,10 @@ def execute_parity(plan, discovery, state, destination, *, repository_root, envi
             run(gradle + ["--init-script", str(java_script),
                 "-DcodexAgent.importedJavaParityInputs=" + str(inputs["java"]),
                 "-DcodexAgent.importedJavaParityOutput=" + str(private / "java/java-parity.json"),
-                ":codex-agent-core:verifyJavaBindingParity"])
-            run(gradle + native_options + [":verifyImportedSdkBindingParity"])
+                ":codex-agent-core:verifyJavaBindingParity"], "gradle", "java",
+                task=":codex-agent-core:verifyJavaBindingParity")
+            run(gradle + native_options + [":verifyImportedSdkBindingParity"], "gradle", None,
+                task=":verifyImportedSdkBindingParity")
             if product_reuse.load_json_bytes(read_regular_file_bytes(result / "sdk-parity.json"))["result"] != "passed":
                 raise ValueError("Full imported SDK parity did not pass")
             if memoized_file_inventory(contexts) != context_inventory:

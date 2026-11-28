@@ -167,6 +167,79 @@ assert "ci" not in sys.modules
             self.assertNotIn("kotlinAbiValidationCompatClasspath", bootstrap._SDK_SEED_SCRIPT)
             self.assertNotIn("findAll", bootstrap._SDK_SEED_SCRIPT)
 
+    def _seed_with_exits(self, exits):
+        """Run the real seed against a fake Gradle that writes one line per attempt."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        calls = []
+
+        def fake_run(command, *, stdout, **kwargs):
+            calls.append(command)
+            stdout.write(f'attempt {len(calls)}\n'.encode())
+            return subprocess.CompletedProcess(command, exits[len(calls) - 1])
+
+        destination = root / 'seed'
+        with patch.object(bootstrap, 'git_regular_blob_bytes', side_effect=lambda *a, **k:
+                self.metadata('same') if a[2].endswith('.xml') else b'// Git input\n'), \
+                patch.object(bootstrap.subprocess, 'run', side_effect=fake_run), \
+                patch.object(bootstrap.time, 'sleep') as sleep:
+            try:
+                bootstrap.seed_sdk_gradle_dependencies(root, 'a' * 40, root / 'gradlew', {}, destination)
+            except ValueError as error:
+                return destination, calls, sleep, error
+        return destination, calls, sleep, None
+
+    def test_online_seed_retries_gradle_failures_then_succeeds(self):
+        destination, calls, sleep, error = self._seed_with_exits([1, 1, 0])
+        self.assertIsNone(error)
+        self.assertEqual(3, len(calls))
+        self.assertTrue(all(command == calls[0] for command in calls))
+        self.assertIn('--stacktrace', calls[0])
+        self.assertEqual([(10,), (30,)], [call.args for call in sleep.call_args_list])
+        self.assertEqual(b'attempt 1\n', (destination / 'gradle-attempt-1.log').read_bytes())
+        self.assertEqual(b'attempt 2\n', (destination / 'gradle-attempt-2.log').read_bytes())
+        self.assertEqual(b'attempt 3\n', (destination / 'gradle.log').read_bytes())
+        self.assertFalse(json.loads((destination / 'seed-timing.json').read_text())['reusedInProcess'])
+
+    def test_online_seed_fails_after_three_gradle_failures_pointing_at_last_log(self):
+        destination, calls, sleep, error = self._seed_with_exits([1, 1, 1])
+        self.assertEqual(3, len(calls))
+        self.assertEqual(2, sleep.call_count)
+        self.assertRegex(str(error), r'^Pinned SDK dependency seeding failed after 3 attempts; see ')
+        self.assertTrue(str(error).endswith(str(destination / 'gradle.log')))
+        self.assertEqual(b'attempt 3\n', (destination / 'gradle.log').read_bytes())
+        self.assertEqual(['gradle-attempt-1.log', 'gradle-attempt-2.log', 'gradle.log'],
+                         sorted(path.name for path in destination.glob('gradle*.log')))
+        self.assertFalse((destination / 'seed-timing.json').exists())
+
+    def test_first_success_runs_once_without_waiting(self):
+        destination, calls, sleep, error = self._seed_with_exits([0])
+        self.assertIsNone(error)
+        self.assertEqual(1, len(calls))
+        sleep.assert_not_called()
+        self.assertEqual(['gradle.log'], sorted(path.name for path in destination.glob('gradle*.log')))
+
+    def test_non_gradle_errors_are_never_retried(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            # Our own validation error, before Gradle starts.
+            with patch.object(bootstrap, 'git_regular_blob_bytes', side_effect=ValueError('Git boundary reached')), \
+                    patch.object(bootstrap.subprocess, 'run') as run, patch.object(bootstrap.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(ValueError, 'Git boundary reached'):
+                    bootstrap.seed_sdk_gradle_dependencies(root, 'a' * 40, root / 'gradlew', {}, root / 'seed')
+            run.assert_not_called()
+            sleep.assert_not_called()
+            # A launch failure (no Gradle exit status) propagates on the first attempt.
+            with patch.object(bootstrap, 'git_regular_blob_bytes', side_effect=lambda *a, **k:
+                    self.metadata('same') if a[2].endswith('.xml') else b'// Git input\n'), \
+                    patch.object(bootstrap.subprocess, 'run', side_effect=FileNotFoundError('java')) as run, \
+                    patch.object(bootstrap.time, 'sleep') as sleep:
+                with self.assertRaises(FileNotFoundError):
+                    bootstrap.seed_sdk_gradle_dependencies(root, 'a' * 40, root / 'gradlew', {}, root / 'seed-2')
+            self.assertEqual(1, run.call_count)
+            sleep.assert_not_called()
+
     @staticmethod
     def metadata(name, digest='a' * 64):
         return (f'<verification-metadata xmlns="https://schema.gradle.org/dependency-verification">'

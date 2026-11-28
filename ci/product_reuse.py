@@ -40,11 +40,28 @@ from impact import validate_legacy_lane_projection, validate_remote_build_author
 from receipt import safe_extract
 from runtime_reference_transport import measured, measured_volume, count, report_api_error
 from reuse import github_output, run_matches_pr
+import producer_scope
 from runtime_reference_transport import api_json, download_artifact, download_artifact_to_file, paginated_items
 
 
-def _primary_rate_limit_delay(error):
-    """Only a GitHub API exhaustion response authorizes waiting for its reset."""
+_RATE_LIMIT_MARGIN = 5  # Seconds past the advertised reset before the first re-read.
+_RATE_LIMIT_JITTER = (0, 20)  # Spread concurrent jobs that share one installation bucket.
+_RATE_LIMIT_STALE_BACKOFF = (15, 30)  # Reset not yet advanced: back off and re-read it.
+_RATE_LIMIT_WAITS = 3  # Primary-quota waits allowed per call.
+
+
+def _uniform(low, high):
+    import random
+    return random.uniform(low, high)
+
+
+def _primary_rate_limit_window(error, *, previous_reset=None):
+    """(reset epoch, seconds to wait) of a GitHub API exhaustion response, else None.
+
+    Only an exhausted primary quota authorizes waiting. A reset already in the
+    past is accepted only when it repeats the reset this call already waited
+    for (the window has not rolled over yet).
+    """
     if not isinstance(error, urllib.error.HTTPError) or error.code not in {403, 429}:
         return None
     origin = urllib.parse.urlsplit(error.geturl())
@@ -58,7 +75,7 @@ def _primary_rate_limit_delay(error):
     if limit <= 0 or remaining != 0 or used < limit:
         return None
     delay = reset - time.time()
-    if not -5 <= delay <= 3600:
+    if delay > 3600 or delay < -5 and reset != previous_reset:
         return None
     retry_after = error.headers.get('retry-after')
     if retry_after is not None:
@@ -67,37 +84,64 @@ def _primary_rate_limit_delay(error):
         delay = max(delay, int(retry_after))
         if delay > 3600:
             return None
-    return max(0, delay) + 2
+    return reset, max(0, delay)
+
+
+def _primary_rate_limit_delay(error):
+    """Only a GitHub API exhaustion response authorizes waiting for its reset.
+
+    Unchanged single-wait contract for the reference-archive range reader;
+    ``_retry_github_get`` applies its own margin, jitter and wait cap.
+    """
+    window = _primary_rate_limit_window(error)
+    return None if window is None else window[1] + 2
 
 
 def _retry_github_get(operation, *, retry_delays=(1, 2, 4)):
-    """Retry transient recovery GETs; every attempt retains full authentication."""
+    """Retry transient recovery GETs; every attempt retains full authentication.
+
+    An exhausted primary quota waits until its reset plus a margin and jitter,
+    at most ``_RATE_LIMIT_WAITS`` times per call; a reset that has not advanced
+    backs off and re-reads it. Other 403s never retry.
+    """
     @wraps(operation)
     def retry(*args, **kwargs):
-        waited_for_reset = False
-        for attempt in range(len(retry_delays) + 1):
+        transient_retries = 0
+        rate_limit_waits = 0
+        last_reset = None
+        while True:
             try:
                 return operation(*args, **kwargs)
             except (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead) as error:
-                delay = None if waited_for_reset else _primary_rate_limit_delay(error)
+                window = (None if rate_limit_waits >= _RATE_LIMIT_WAITS
+                          else _primary_rate_limit_window(error, previous_reset=last_reset))
                 transient = (isinstance(error, (TimeoutError, ConnectionError, IncompleteRead))
                     or isinstance(error, urllib.error.HTTPError) and error.code in {500, 502, 503, 504}
                     or isinstance(error, urllib.error.URLError)
                     and isinstance(error.reason, (socket.gaierror, TimeoutError, ConnectionError)))
-                if attempt == len(retry_delays) or not transient and delay is None:
+                if window is None and (not transient or transient_retries == len(retry_delays)):
                     raise
-                if delay is not None:
+                if window is not None:
+                    reset, wait = window
                     report_api_error(error)
-                    waited_for_reset = True
+                    rate_limit_waits += 1
+                    stale = last_reset is not None and reset <= last_reset
+                    delay = (_uniform(*_RATE_LIMIT_STALE_BACKOFF) if stale
+                             else wait + _RATE_LIMIT_MARGIN + _uniform(*_RATE_LIMIT_JITTER))
+                    last_reset = reset if last_reset is None else max(last_reset, reset)
                     count('primaryRateLimitRetries')
                     count('primaryRateLimitWaitSeconds', delay)
-                    print(f'github-api-rate-limit: waiting {delay:.3f}s for primary quota reset',
+                    print(f'github-api-rate-limit: waiting {delay:.3f}s for primary quota reset'
+                          f' (wait {rate_limit_waits}/{_RATE_LIMIT_WAITS}'
+                          f'{", reset not advanced" if stale else ""})',
                           file=sys.stderr, flush=True)
                 else:
+                    delay = retry_delays[transient_retries]
+                    transient_retries += 1
                     count('transientGetRetries')
                 if isinstance(error, urllib.error.HTTPError):
                     error.close()
-                time.sleep(retry_delays[attempt] if delay is None else delay)
+                time.sleep(delay)
     return retry
 
 
@@ -393,17 +437,47 @@ def _observe_tested_commit(
     # Share only the immutable Git response, never a caller's admission verdict.
     # Live runs and each new acquisition still require a fresh observation.
     observations = _CI_OBSERVATIONS.get() if run.get("status") == "completed" else None
-    commit = _historical_ci_observation(observations or {},
-        ("tested-commit", api, repository, token, expected_commit, attempt), attempt,
-        lambda: {"run": run, "testedCommit": api_json(
-            f"{api}/repos/{repository}/git/commits/{expected_commit}", token)})["testedCommit"]
-    return _validate_tested_commit(run, commit, expected_commit=expected_commit,
-        expected_tree=expected_tree, pull_request=pull_request, allow_dispatch=allow_dispatch)
+    def fetch():
+        tested = api_json(f"{api}/repos/{repository}/git/commits/{expected_commit}", token)
+        # Durable (merged PR) or live (open PR) association evidence is read
+        # once with the commit, then validated per caller.
+        reads = (producer_scope.association_reads(run, tested, pull_request=pull_request,
+                    fetch=_association_fetch(api, repository, token))
+                 if producer_scope.association_reads_required(run, pull_request) else None)
+        return {"run": run, "testedCommit": tested, "association": reads}
+    observed = _historical_ci_observation(observations or {},
+        # Reads are shared per commit; durable evidence names its PR, so a caller
+        # claiming another PR is rejected by its own validation below.
+        ("tested-commit", api, repository, token, expected_commit, attempt), attempt, fetch)
+    return _validate_tested_commit(run, observed["testedCommit"], expected_commit=expected_commit,
+        expected_tree=expected_tree, pull_request=pull_request, allow_dispatch=allow_dispatch,
+        association_reads=observed["association"])
+
+
+def _association_fetch(api, repository, token):
+    """Fixed same-repository reads for durable pull-request association only."""
+    if repository != producer_scope.REPOSITORY:
+        raise ValueError("Durable pull-request association requires the canonical repository")
+    def fetch(path):
+        url = f"{api}/repos/{repository}/{path}"
+        if path.startswith("commits/") and path.endswith("/pulls"):
+            import json
+            from reuse import api_request
+            from runtime_reference_transport import token_for
+            return json.loads(api_request(url, token_for(url, token)))
+        return api_json(url, token)
+    return fetch
 
 
 def _validate_tested_commit(run, commit, *, expected_commit, expected_tree, pull_request,
-                           allow_dispatch=False):
-    """Check a freshly fetched Git observation against the caller's exact run pins."""
+                           allow_dispatch=False, association=None, association_reads=None):
+    """Check a freshly fetched Git observation against the caller's exact run pins.
+
+    A pull_request run binds its PR through the live association, or, once
+    GitHub drops it for a merged PR, through durable evidence fetched by
+    ``association`` (or pre-read ``association_reads``). Without either, an
+    empty live association still rejects.
+    """
     if any(not isinstance(value, str) or _OID.fullmatch(value) is None
            for value in (expected_commit, expected_tree)):
         raise ValueError("Tested Git commit/tree identity is malformed")
@@ -412,28 +486,10 @@ def _validate_tested_commit(run, commit, *, expected_commit, expected_tree, pull
             or tree.get("sha") != expected_tree):
         raise ValueError("Tested Git commit/tree differs from its original identity")
     if run.get("event") == "pull_request":
-        requests = [value for value in require_array(run.get("pull_requests"), "Original CI pull requests")
-                    if isinstance(value, dict) and value.get("number") == pull_request]
-        if len(requests) != 1:
-            raise ValueError("Original CI attempt has ambiguous pull-request identity")
-        identities = []
-        for field in ("base", "head"):
-            value = requests[0].get(field)
-            oid = value.get("sha") if isinstance(value, dict) else None
-            if not isinstance(oid, str) or re.fullmatch(r"[0-9a-f]{40}", oid) is None:
-                raise ValueError("Original CI attempt lacks exact pull-request base/head")
-            identities.append(oid)
-        parents = require_array(commit.get("parents"), "Tested merge parents")
-        trigger_head = run.get("head_sha")
-        if not isinstance(trigger_head, str) or _OID.fullmatch(trigger_head) is None:
-            raise ValueError("Original CI attempt lacks exact triggering head")
-        # GitHub updates a historical run's pull_requests[].head.sha when the
-        # PR moves; run.head_sha retains the head that triggered this attempt.
-        original_head = trigger_head if trigger_head != expected_commit else identities[1]
-        if [value.get("sha") if isinstance(value, dict) else None for value in parents] != [
-            identities[0], original_head,
-        ]:
-            raise ValueError("Tested merge does not bind the original CI pull-request base/head")
+        require_array(run.get("pull_requests"), "Original CI pull requests")
+        require_array(commit.get("parents"), "Tested merge parents")
+        producer_scope.pull_request_binding(run, commit, expected_commit=expected_commit,
+            pull_request=pull_request, fetch=association, reads=association_reads)
     elif (run.get("event") not in ({"merge_group", "workflow_dispatch"} if allow_dispatch else {"merge_group"})
           or run.get("head_sha") != expected_commit):
         raise ValueError("Merge-group attempt does not match its tested commit")
@@ -464,8 +520,9 @@ def _same_pr_run(
         or any(not isinstance(run.get(field), dict)
                or run[field].get("full_name") != repository or run[field].get("fork") is not False
                for field in ("repository", "head_repository"))
-        or not run_matches_pr(run, pull_request)
+        or not (run_matches_pr(run, pull_request) or producer_scope.unassociated_pull_request_run(run))
     ):
+        # An unassociated run is bound durably to this PR by _observe_tested_commit below.
         raise ValueError("Same-PR product catalog did not come from an allowed successful CI run")
     attempt = require_integer(run.get("run_attempt"), "product catalog workflow run attempt", 1)
     if attempt != expected_attempt:
@@ -860,8 +917,11 @@ def _fresh_ci_observation(producer, token):
     """One invocation's independent reads; callers retain their own role gates."""
     from products.restore import bounded_verify
     producer = load_canonical_json_bytes(canonical_json_bytes(validate_producer(producer)))
-    if (producer["repository"], producer["workflowPath"], producer["event"], producer["pullRequest"]) != (
-            "codex-agent-labs/codex-agent", ".github/workflows/ci.yml", "pull_request", 31):
+    # PR-31 originals are owner-pinned identities; otherwise only the executing
+    # run's own PR scope may be observed (same-run checkpoints of a new PR).
+    if ((producer["repository"], producer["workflowPath"], producer["event"]) != (
+            "codex-agent-labs/codex-agent", ".github/workflows/ci.yml", "pull_request")
+            or producer["pullRequest"] not in {31, producer_scope.current_pull_request(os.environ)}):
         raise ValueError("Fresh checkpoint observation requires its exact CI producer")
     base = f"https://api.github.com/repos/{producer['repository']}"
     attempt = f"{base}/actions/runs/{producer['runId']}/attempts/{producer['runAttempt']}"
@@ -870,7 +930,8 @@ def _fresh_ci_observation(producer, token):
         lambda: api_json(attempt, token),
         lambda: paginated_items(attempt + "/jobs", "jobs", token)))
     _validate_tested_commit(run, commit, expected_commit=producer["commit"],
-        expected_tree=producer["tree"], pull_request=producer["pullRequest"])
+        expected_tree=producer["tree"], pull_request=producer["pullRequest"],
+        association=_association_fetch("https://api.github.com", producer["repository"], token))
     observation = _FreshCIObservation(producer, token,
         {"run": run, "testedCommit": commit, "jobs": jobs}, _FRESH_CI_OBSERVATION)
     try:
@@ -1013,7 +1074,9 @@ def _observe_ci_producer_jobs(
                        or run[field].get("full_name") != repository
                        or run[field].get("fork") is not False
                        for field in ("repository", "head_repository"))
-                or producer["event"] == "pull_request" and not run_matches_pr(run, producer["pullRequest"])):
+                # An unassociated run was bound durably to this PR with its tested commit.
+                or producer["event"] == "pull_request" and not (run_matches_pr(run, producer["pullRequest"])
+                    or producer_scope.unassociated_pull_request_run(run))):
             raise ValueError("Contract original CI attempt does not match its producer")
         for phase in original["phases"]:
             workflow, sha = workflows[phase]
@@ -2149,7 +2212,8 @@ def _prior_failed_runtime_objects(
                   "artifactId": original_artifact["id"],
                   "artifactSha256": original_artifact["digest"]}
         artifact, _, observed, workflow = _authenticate_runtime_original_reference_source(
-            plan, consumer_producer, source, trusted_workflow_sha=original_workflow_sha, token=token)
+            plan, consumer_producer, source, trusted_workflow_sha=original_workflow_sha, token=token,
+            pinned=completed_frozen)
         job_name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
         job = _matching_ci_jobs(observed[0]["jobs"], job_name)[0]
         completed_frozen.require_original_locator(
@@ -2184,8 +2248,19 @@ def _prior_failed_runtime_objects(
                         **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
                     receipt = verified["receipt"]
                     producer = receipt["producer"]
+                    # T4: a prior Runtime receipt is the consumer's own PR scope, or an
+                    # owner-pinned (T4c) PR-31 phase receipt of the native completed
+                    # capability (exact frozen receipt digest), for the consumer that
+                    # capability admits. Event, trust domain and ordering stay exact.
+                    pinned_original = (plan is not None and completed_frozen is not None
+                                       and completed_frozen.pins_receipt(receipt))
+                    if pinned_original:
+                        completed_frozen.check_consumer({"kind": "ci", "producer": consumer_producer})
+                        if plan.get("pullRequest") != completed_frozen.admitted_pull_request():
+                            raise ValueError("Pinned Runtime consumer plan differs from its admitted scope [scope:consumer]")
                     if (receipt["trustDomain"] != "development" or producer["event"] != "pull_request"
-                            or (plan is not None and producer["pullRequest"] != plan["pullRequest"])):
+                            or (plan is not None and not pinned_original
+                                and producer["pullRequest"] != plan["pullRequest"])):
                         raise ValueError("Prior failed Runtime receipt is not an original PR phase")
                     if plan is not None:
                         run_id = producer["runId"]
@@ -2201,7 +2276,11 @@ def _prior_failed_runtime_objects(
                                 or official.get("path") != ".github/workflows/ci.yml"
                                 or official.get("status") != "completed"
                                 or official.get("conclusion") not in {"failure", "cancelled"}
-                                or not run_matches_pr(official, plan["pullRequest"])
+                                or not (run_matches_pr(official, plan["pullRequest"]) if not pinned_original
+                                        # The pinned PR-31 run's live association is gone (PR merged);
+                                        # its run ID/attempt is receipt-pinned and its upload locator-pinned.
+                                        else (run_matches_pr(official, producer["pullRequest"])
+                                              or producer_scope.unassociated_pull_request_run(official)))
                                 or any(not isinstance(official.get(field), dict)
                                        or official[field].get("full_name") != plan["repository"]
                                        or official[field].get("fork") is not False
@@ -2339,7 +2418,8 @@ def _capture_completed_runtime_controls(plan, producer, destination, artifact_ro
         receipt = source["receipt"]
         instance = _identity(receipt)
         artifact, _, observed, workflow = _authenticate_runtime_original_reference_source(
-            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token)
+            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token,
+            pinned=completed_frozen)
         name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
         jobs = _matching_ci_jobs(observed[0]["jobs"], name)
         if len(jobs) != 1:
@@ -8085,7 +8165,8 @@ def _initial_runtime_upload_source(producer, artifact_id, token):
 
 @measured
 def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destination, *,
-                                       trusted_workflow_sha, token, wanted, inventory_only=None, _targets=None):
+                                       trusted_workflow_sha, token, wanted, inventory_only=None, _targets=None,
+                                       pinned=None):
     """Resolve qualified bytes, not enclosing carriers, after fresh source auth.
 
     The top-level reference envelope has passed its complete upload SHA gate.
@@ -8222,7 +8303,7 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
                 if source["relativePath"] in remote:
                     resolved.append(_capture_runtime_original_reference_members(plan, producer, source,
                         remote[source["relativePath"]], destination,
-                        trusted_workflow_sha=trusted_workflow_sha, token=token))
+                        trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=pinned))
             child = {"originalReferenceSources": resolved}
         elif "runtime-references.json" in names:
             entry = archive.getinfo("runtime-references.json")
@@ -8275,7 +8356,7 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
                 child_targets = {path: tuple(paths) for path, paths in child_targets.items()}
                 child = _capture_runtime_reference_members(plan, plan_bytes, producer,
                     references["base"], destination, trusted_workflow_sha=trusted_workflow_sha,
-                    token=token, wanted=inherited, _targets=child_targets)
+                    token=token, wanted=inherited, _targets=child_targets, pinned=pinned)
         elif base.get("referenceControlSha256") is not None:
             raise ValueError("Original Runtime reference source lacks its authenticated control")
         for path, record in wanted.items():
@@ -8301,12 +8382,32 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
 
 @verification_scoped
 def _authenticate_runtime_original_reference_source(plan, producer, source, *,
-                                                     trusted_workflow_sha, token):
-    """Fresh GitHub identity gates, independent of body storage or qualification."""
+                                                     trusted_workflow_sha, token, pinned=None):
+    """Fresh GitHub identity gates, independent of body storage or qualification.
+
+    T4 scope: the original is the consumer's own PR scope (same event and PR),
+    or an owner-pinned (T4c) PR-31 original that ``pinned`` (the consumer's
+    native CompletedFrozenReuse capability) proves it holds, for a consumer
+    that capability admitted. Repository and earlier-run ordering stay exact.
+    """
     receipt = source["receipt"]
     original = receipt["producer"]
-    if (original["repository"] != plan["repository"] or original["event"] != plan["event"]
-            or original["pullRequest"] != producer["pullRequest"]
+    owner_pinned = False
+    if pinned is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        import producer_scope
+        owner_pinned = (type(pinned) is CompletedFrozenReuse and original["event"] == "pull_request"
+                        and original["pullRequest"] == producer_scope.PINNED_PULL_REQUEST
+                        and plan["event"] in producer_scope.CONSUMER_EVENTS and pinned.pins_original(source))
+    if owner_pinned:
+        # The consumer and its plan are the capability's admitted scope N (PR N
+        # or merge-queue pr-N); any disagreement raises QualificationIncompatible.
+        pinned.check_consumer({"kind": "ci", "producer": producer})
+        if plan.get("pullRequest") != pinned.admitted_pull_request():
+            raise ValueError("Pinned original consumer plan differs from its admitted scope [scope:consumer]")
+    if (original["repository"] != plan["repository"]
+            or not owner_pinned and (original["event"] != plan["event"]
+                                     or original["pullRequest"] != producer["pullRequest"])
             or (original["runId"], original["runAttempt"]) >= (producer["runId"], producer["runAttempt"])):
         raise ValueError("Original member source is not an earlier producer for this consumer")
     batch = _CI_OBSERVATIONS.get()
@@ -8348,7 +8449,7 @@ def _authenticate_runtime_original_reference_source(plan, producer, source, *,
 
 @measured
 def _capture_runtime_original_reference_members(plan, producer, source, references, destination, *,
-                                               trusted_workflow_sha, token):
+                                               trusted_workflow_sha, token, pinned=None):
     """Fresh original source gates plus member SHA qualified by the current upload.
 
     This is the same custody protocol as Runtime wave references. It is never
@@ -8356,7 +8457,7 @@ def _capture_runtime_original_reference_members(plan, producer, source, referenc
     """
     from runtime_reference_archive import open_reference_archive, copy_reference_member
     artifact, original, observed, workflow = _authenticate_runtime_original_reference_source(
-        plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token)
+        plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=pinned)
     receipt = source["receipt"]
     if source["kind"] == "phase":
         from products.verified_evidence import runtime_original_cache
@@ -8596,7 +8697,7 @@ def _restore_checkpoint_projection(locator, *, plan, producer, original, refs,
     rows = [row for row in refs["references"] if row["source"] == source["relativePath"]
             and row["relativePath"].startswith(source["relativePath"] + "/")]
     transport = _capture_runtime_original_reference_members(plan, producer, source, rows, original,
-        trusted_workflow_sha=trusted_workflow_sha, token=token)
+        trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=completed_frozen)
     _register_qualified_original_projections(original, {**refs, "sources": sources}, [transport],
         trusted_workflow_sha=trusted_workflow_sha, completed_frozen=completed_frozen)
     count("restoredCheckpointProjections")
@@ -8693,7 +8794,7 @@ def _restore_runtime_original_projections(plan, producer, state, *, trusted_work
             if declared != expected:
                 raise ValueError("Restored projection inventory differs from the authenticated carrier")
             upload, origin, fresh, _ = _authenticate_runtime_original_reference_source(plan, producer, source,
-                trusted_workflow_sha=trusted_workflow_sha, token=token)
+                trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=completed_frozen)
             sources.append(source)
             transports.append({"artifact": upload, "captureProducer": origin, "observed": fresh})
         _register_qualified_original_projections(original, {**references, "sources": sources}, transports,
@@ -9010,7 +9111,7 @@ def capture_runtime_resume_upload(
             def capture_source(source, records, target):
                 original_reference_transports.append(_capture_runtime_original_reference_members(
                     plan, producer, source, records, target,
-                    trusted_workflow_sha=trusted_workflow_sha, token=token))
+                    trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=completed_frozen))
             original_references = _canonical_control(original_reference_path, "Runtime original references")
             validate_original_references(original_references)
             import hydrated_evidence
@@ -9049,7 +9150,8 @@ def capture_runtime_resume_upload(
                                    ['product-resume-inputs/plan/impact-plan.json'])
                 reference_transport = _capture_runtime_reference_members(plan, plan_bytes, producer,
                     base, target, trusted_workflow_sha=trusted_workflow_sha, token=token,
-                    wanted=wanted, _targets={path: tuple(paths) for path, paths in targets.items()})
+                    wanted=wanted, _targets={path: tuple(paths) for path, paths in targets.items()},
+                    pinned=completed_frozen)
             zipped = resolve_reference_handoff(original, None, references, capture_source=capture_base,
                 state_wave=state_wave, sdk_state_wave=sdk_state_wave,
                 **({'selected_paths': selected_paths} if selected_paths is not None else {}))
@@ -9107,11 +9209,20 @@ def capture_runtime_resume_upload(
 def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, expected_build_key, expected_metadata_receipt_sha256,
         repository_root=None, environ=None, original_run_id=None, original_run_attempt=None,
-        original_producer=None, token, expected_plan_revision=None):
+        original_producer=None, token, expected_plan_revision=None, completed_frozen=None,
+        original_receipt=None):
     """Capture a fixed protected job's exact upload, not its product admission.
 
     Original signature/content authentication remains in the existing full
     carrier/SDK gate. Nothing in current transport rewrites original provenance.
+
+    T4 scope: a retained ``original_producer`` is the consumer's own PR scope
+    (same event and PR), or the producer of an owner-pinned (T4c) PR-31
+    aggregate metadata receipt: ``original_receipt`` is the selected receipt
+    (exact selected digest and key, produced by ``original_producer``) and the
+    caller's native ``completed_frozen`` capability pins it (pins_receipt), for
+    a consumer that capability admits and a plan carrying that admitted scope.
+    Repository and earlier-run ordering stay exact.
     """
     from products.sdk_package import _require_capability_output_separate
     from products.sdk_protected_runtime import _original_carrier
@@ -9147,10 +9258,31 @@ def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact
             original_run_id=original_run_id, original_run_attempt=original_run_attempt,
         )["producer"])
         producer = current if original_producer is None else validate_producer(original_producer)
+        owner_pinned = False
+        if original_producer is not None and completed_frozen is not None:
+            from reuse_qualification import CompletedFrozenReuse
+            owner_pinned = (type(completed_frozen) is CompletedFrozenReuse
+                            and isinstance(original_receipt, dict)
+                            and sha256_bytes(canonical_json_bytes(original_receipt)) == digest
+                            and original_receipt.get("buildKey") == key
+                            and original_receipt.get("producer") == producer
+                            and _identity(original_receipt) == PhaseInstanceId(
+                                "runtime", "runtime-aggregate", "metadata", "aggregate")
+                            and producer["event"] == "pull_request"
+                            and producer["pullRequest"] == producer_scope.PINNED_PULL_REQUEST
+                            and current["event"] in producer_scope.CONSUMER_EVENTS
+                            and completed_frozen.pins_receipt(original_receipt))
+        if owner_pinned:
+            # The consumer and its plan are the capability's admitted scope N (PR N
+            # or merge-queue pr-N); any disagreement raises QualificationIncompatible.
+            completed_frozen.check_consumer({"kind": "ci", "producer": current})
+            if plan.get("pullRequest") != completed_frozen.admitted_pull_request():
+                raise ValueError("Pinned aggregate consumer plan differs from its admitted scope [scope:consumer]")
         if original_producer is not None and (
                 original_run_id is not None or original_run_attempt is not None
-                or producer["repository"] != current["repository"] or producer["event"] != current["event"]
-                or producer["pullRequest"] != current["pullRequest"]
+                or producer["repository"] != current["repository"]
+                or not owner_pinned and (producer["event"] != current["event"]
+                                         or producer["pullRequest"] != current["pullRequest"])
                 or (producer["runId"], producer["runAttempt"]) >= (current["runId"], current["runAttempt"])):
             raise ValueError("Retained aggregate requires the exact earlier original producer of this plan's PR")
         job = "product-validation / runtime-aggregate-attestation"

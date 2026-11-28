@@ -15,7 +15,7 @@ jobs:
     if: >-
       github.repository == 'codex-agent-labs/codex-agent' &&
       github.event_name == 'pull_request' &&
-      github.event.pull_request.number == 31 &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.repo.fork == false &&
       (github.event.label.name == 'ci:reuse-qualification-proof' || github.event.label.name == 'ci:reuse-cache-proof')

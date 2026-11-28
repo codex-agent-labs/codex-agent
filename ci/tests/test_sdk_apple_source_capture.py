@@ -20,6 +20,7 @@ sys.path.insert(0, str(CI_ROOT))
 
 import receipt as lane_receipt  # noqa: E402
 import reuse  # noqa: E402
+from ci.tests import association_fixture
 import sdk_apple_source  # noqa: E402
 from products.inventory import (  # noqa: E402
     load_canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
@@ -100,6 +101,7 @@ class SdkAppleSourceCaptureTest(unittest.TestCase):
             "run_attempt": attempt,
             "path": ".github/workflows/ci.yml",
             "head_sha": self.plan["headCommit"],
+            "head_branch": "feature",
             "event": self.plan["event"],
             "status": "completed",
             "conclusion": "success",
@@ -107,8 +109,8 @@ class SdkAppleSourceCaptureTest(unittest.TestCase):
             "completed_at": "2026-09-10T10:30:00Z",
             "pull_requests": [{
                 "number": self.plan["pullRequest"],
-                "base": {"sha": self.plan["baseCommit"]},
-                "head": {"sha": self.plan["headCommit"]},
+                "base": {"sha": self.plan["baseCommit"], "ref": "main"},
+                "head": {"sha": self.plan["headCommit"], "ref": "feature"},
             }],
             "repository": {"full_name": self.plan["repository"], "fork": False},
             "head_repository": {"full_name": self.plan["repository"], "fork": False},
@@ -145,9 +147,14 @@ class SdkAppleSourceCaptureTest(unittest.TestCase):
         selected_artifact = self.artifact if artifact is None else artifact
         selected_raw = self.raw if raw is None else raw
         attempts = {(91, 2)} | ({original_run} if original_run is not None else set())
+        association = {}
+        for run_id, attempt in attempts:
+            association.update(association_fixture.live(self._run(run_id, attempt), self._commit()))
 
         def request(url: str, token: str) -> bytes:
             self.assertEqual(self.token, token)
+            if url in association:
+                return json.dumps(association[url]).encode()
             for run_id, attempt in attempts:
                 base = (f"https://api.github.com/repos/{self.plan['repository']}"
                         f"/actions/runs/{run_id}/attempts/{attempt}")
@@ -453,8 +460,18 @@ class SdkAppleSourceCaptureTest(unittest.TestCase):
         }
         details = {value["id"]: value for value in (current_artifact, *original_artifacts)}
 
+        association = {}
+        for run in runs.values():
+            # One open PR: its current head is the current run's head.
+            tested = next(value for value in commits.values()
+                          if value["parents"][1]["sha"] in {run["head_sha"], run["pull_requests"][0]["head"]["sha"]})
+            association.update(association_fixture.live(
+                run, tested, pull_head=runs[91]["pull_requests"][0]["head"]["sha"]))
+
         def api(url: str, token: str) -> bytes:
             self.assertEqual(self.token, token)
+            if url in association:
+                return json.dumps(association[url]).encode()
             for run_id, run in runs.items():
                 base = (f"https://api.github.com/repos/{self.plan['repository']}"
                         f"/actions/runs/{run_id}/attempts/{run['run_attempt']}")

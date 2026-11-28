@@ -18,10 +18,18 @@ from ci.tests import test_contract_ci_originals as fixture
 from products.inventory import (canonical_json_bytes, publish_regular_tree as actual_publish_regular_tree,
                                 regular_file_inventory, sha256_bytes)
 from products.receipt import compute_build_key
+from products.registry import PhaseInstanceId
+import reuse_qualification as qualification
+from ci.tests.runner_scope import pin_runner_scope
 
 
 capture = fixture.product_reuse
 JOB = "product-validation / runtime-aggregate-attestation"
+AGGREGATE = PhaseInstanceId("runtime", "runtime-aggregate", "metadata", "aggregate")
+PR_37_RUNNER = {"GITHUB_REPOSITORY": fixture.REPOSITORY, "GITHUB_EVENT_NAME": "pull_request",
+                "GITHUB_REF": "refs/pull/37/merge"}
+QUEUE_37_RUNNER = {"GITHUB_REPOSITORY": fixture.REPOSITORY, "GITHUB_EVENT_NAME": "merge_group",
+                   "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-37-" + "0123456789abcdef" * 2 + "01234567"}
 
 
 class RuntimeAggregateUploadTest(unittest.TestCase):
@@ -152,6 +160,84 @@ class RuntimeAggregateUploadTest(unittest.TestCase):
                 self.call(original_producer={**self.producer, **change},
                     environ={"GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "1"})
             self.assertFalse(self.output.exists())
+
+    def capability(self, pinned_digest):
+        """A native capability whose only frozen phase is the aggregate metadata receipt.
+
+        Only its spec phases are stubbed; pins_receipt, check_consumer and the
+        admitted scope are the real CompletedFrozenReuse methods.
+        """
+        cap = object.__new__(qualification.CompletedFrozenReuse)
+        for name in ("_checkpoint", "_consumer_scope", "_eligible"):
+            object.__setattr__(cap, name, None)
+        self.enterContext(patch.object(qualification.CompletedFrozenReuse, "_values",
+                                       lambda _self: ({}, {AGGREGATE: {"receiptSha256": pinned_digest}})))
+        return cap
+
+    def consume_pinned(self, runner, *, event="pull_request", pull_request=37, **changes):
+        """A later PR-37 (or merge-queue pr-37) consumer of the retained PR-31 aggregate."""
+        pin_runner_scope(self, runner)
+        self.plan = {**self.plan, "validationCommit": "c" * 40, "validationTree": "d" * 40,
+                     "event": event, "pullRequest": pull_request}
+        self.plan_path.write_bytes(canonical_json_bytes(self.plan))
+        if "completed_frozen" not in changes:
+            changes["completed_frozen"] = self.capability(self.digest)
+        return self.call(**{"original_producer": self.producer, "original_receipt": self.receipt,
+            "environ": {"GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "1"}, **changes})
+
+    def test_pinned_pr31_aggregate_is_retained_for_a_pr37_consumer(self):
+        result = self.consume_pinned(PR_37_RUNNER)
+        self.assertEqual(self.producer, result["captureProducer"])
+        self.assertEqual(self.digest, result["aggregateReceiptSha256"])
+        self.assertEqual(self.raw, (self.output / "transport.zip").read_bytes())
+
+    def test_pinned_pr31_aggregate_is_retained_for_a_merge_queue_pr37_consumer(self):
+        result = self.consume_pinned(QUEUE_37_RUNNER, event="merge_group")
+        self.assertEqual(self.producer, result["captureProducer"])
+        self.assertEqual(self.raw, (self.output / "transport.zip").read_bytes())
+
+    def test_unpinned_pr31_aggregate_keeps_the_same_pr_rule(self):
+        for changes in ({"completed_frozen": None}, {"original_receipt": None},
+                        {"completed_frozen": None, "original_receipt": None}):
+            with self.subTest(changes=changes), \
+                    self.assertRaisesRegex(ValueError, "exact earlier original producer"):
+                self.consume_pinned(PR_37_RUNNER, **changes)
+            self.assertFalse(self.output.exists())
+        # The capability pins a different aggregate receipt than the selected one.
+        with self.assertRaisesRegex(ValueError, "exact earlier original producer"):
+            self.consume_pinned(PR_37_RUNNER, completed_frozen=self.capability("sha256:" + "d" * 64))
+        # A forged, non-native capability is never authority.
+        with self.assertRaisesRegex(ValueError, "exact earlier original producer"):
+            self.consume_pinned(PR_37_RUNNER, completed_frozen=object())
+        self.assertFalse(self.output.exists())
+
+    def test_pinned_receipt_with_a_wrong_digest_or_producer_is_rejected(self):
+        cases = (
+            {"expected_metadata_receipt_sha256": "sha256:" + "e" * 64},
+            {"original_receipt": {**self.receipt, "producer": {**self.producer, "runAttempt": 1}}},
+            {"original_producer": {**self.producer, "runAttempt": 1}},
+            {"original_receipt": {**self.receipt, "buildKey": "sha256:" + "e" * 64}},
+        )
+        for changes in cases:
+            with self.subTest(changes=sorted(changes)), self.assertRaises(ValueError):
+                self.consume_pinned(PR_37_RUNNER, **changes)
+            self.assertFalse(self.output.exists())
+
+    def test_pinned_aggregate_rejects_a_plan_outside_the_admitted_scope(self):
+        # The runner is PR 37; a plan (and its consumer) for PR 38 is not its admitted scope.
+        with self.assertRaisesRegex(ValueError, r"scope:consumer"):
+            self.consume_pinned(PR_37_RUNNER, pull_request=38)
+        # A merge-queue pr-37 runner cannot admit a merge-group plan scoped to PR 38.
+        with self.assertRaisesRegex(ValueError, r"scope:consumer"):
+            self.consume_pinned(QUEUE_37_RUNNER, event="merge_group", pull_request=38)
+        self.assertFalse(self.output.exists())
+
+    def test_pinned_aggregate_keeps_repository_and_earlier_run_ordering(self):
+        for environ in ({"GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "2"},
+                        {"GITHUB_RUN_ID": "70", "GITHUB_RUN_ATTEMPT": "9"}):
+            with self.subTest(environ=environ), self.assertRaisesRegex(ValueError, "exact earlier original producer"):
+                self.consume_pinned(PR_37_RUNNER, environ=environ)
+        self.assertFalse(self.output.exists())
 
     def test_crosspaired_caller_receipt_key_unsafe_archive_and_changed_plan_reject(self):
         with self.assertRaisesRegex(ValueError, "aggregate key"):

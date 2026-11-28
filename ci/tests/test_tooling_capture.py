@@ -21,6 +21,7 @@ from ci.products.inventory import (
 from ci.products.signatures import generate_development_key
 from ci.products.tooling import JAR, verified_tooling_capture
 from ci.receipt import create_receipt
+from ci.tests import association_fixture
 from ci.tests import test_tooling_release as release_fixture
 
 
@@ -111,6 +112,7 @@ class ToolingCaptureTest(unittest.TestCase):
         selected_jobs = self.jobs if jobs is None else jobs
         selected_artifact = self.artifact if artifact is None else artifact
         selected_raw = self.raw if raw is None else raw
+        association = association_fixture.live(selected_run, self.source.commit)
 
         def request(url, token):
             self.assertEqual(TOKEN, token)
@@ -121,6 +123,8 @@ class ToolingCaptureTest(unittest.TestCase):
             if url == (f"https://api.github.com/repos/{release_fixture.REPOSITORY}/git/commits/"
                        f"{self.producer['commit']}"):
                 return json.dumps(self.source.commit).encode()
+            if url in association:
+                return json.dumps(association[url]).encode()
             if url.startswith(f"{run_root}/attempts/{self.producer['runAttempt']}/jobs?"):
                 return json.dumps({"jobs": selected_jobs}).encode()
             detail = selected_artifact["archive_download_url"].removesuffix("/zip")

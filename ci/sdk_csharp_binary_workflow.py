@@ -257,11 +257,19 @@ def verified_selected_csharp_original(plan, discovery, state, *,
             receipt = restored["receipt"]
             elected = {name: receipt[name] for name in PHASE_PLAN_KEYS}
             producer = receipt["producer"]
+            # T4: the consumer's own PR, or the completed capability's owner-pinned
+            # PR-31 receipt for a consumer (and plan) of its admitted scope.
+            from reuse_qualification import CompletedFrozenReuse
+            pinned = type(completed_frozen) is CompletedFrozenReuse and completed_frozen.pins_receipt(receipt)
+            if pinned:
+                completed_frozen.check_consumer({"kind": "ci", "producer": verified.producer})
+                if verified.plan["pullRequest"] != completed_frozen.admitted_pull_request():
+                    raise ValueError("Selected C# consumer plan differs from its admitted scope [scope:consumer]")
             if (product_reuse._identity(receipt) != _INSTANCE
                     or elected["buildKey"] != record["buildKey"]
                     or producer["event"] != "pull_request"
                     or producer["repository"] != verified.producer["repository"]
-                    or producer["pullRequest"] != verified.producer["pullRequest"]
+                    or not pinned and producer["pullRequest"] != verified.producer["pullRequest"]
                     or receipt["productVersion"] != inputs["selection"]["sdkVersion"]):
                 raise ValueError("Selected C# original differs from its PR or SDK version")
             root_key = private / "sdk-runtime-root.pub"

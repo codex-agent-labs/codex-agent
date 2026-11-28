@@ -79,12 +79,25 @@ class OriginalAggregateRecoveryTest(unittest.TestCase):
         self.calls.append(("stage", records, source_root, destination, kwargs))
         return [{"receiptSha256": records[0]["receiptSha256"], "handoffRoot": "handoffs/original"}]
 
-    def recover(self, selection):
+    def recover(self, selection, **semantic):
         return preparation.recover_original_aggregate_release(self.root / "plan.json", self.selected, selection,
             self.root / "retained-original", keyring=self.root / "keyring.json", keys_directory=self.root / "keys",
             repository_root=self.root / "candidate", environment={"GITHUB_EVENT_NAME": "pull_request",
                 preparation.SCRATCH_ENVIRONMENT: str(self.scratch)},
-            trusted_workflow_sha=PIN, token="synthetic-token")
+            trusted_workflow_sha=PIN, token="synthetic-token", **semantic)
+
+    def test_completed_capability_reaches_the_capture_gate_with_the_exact_selected_receipt(self):
+        """T4: the capture gate, not this lookup, decides an owner-pinned PR-31 producer."""
+        capability = object()  # Composition seam; the capture gate rejects forged authority.
+        self.producer = {**self.producer, "pullRequest": 37, "runId": 46, "runAttempt": 1}
+        selection = self.write_receipt()
+        self.recover(selection, completed_frozen=capability)
+        capture = next(call for call in self.calls if call[0] == "capture")
+        self.assertIs(capability, capture[2]["completed_frozen"])
+        self.assertEqual(self.receipt, capture[2]["original_receipt"])
+        self.assertEqual(self.original, capture[2]["original_producer"])
+        self.assertEqual(selection["metadata"]["receiptSha256"],
+                         sha256_bytes(canonical_json_bytes(capture[2]["original_receipt"])))
 
     def test_earlier_original_upload_is_captured_and_signature_staged(self):
         selection = self.write_receipt()

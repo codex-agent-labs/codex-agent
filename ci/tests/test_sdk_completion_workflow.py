@@ -552,7 +552,9 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                       self.parity_step("name: Verify full parity from authenticated immutable phases"))
         self.assertIn("if: inputs.importedOnly && inputs.reuseCompletedParity",
                       self.parity_step("name: Verify approved original parity against current native state"))
-        self.assertIn("if: ${{ !inputs.reuseCompletedParity }}", self.parity_step("id: upload"))
+        # 9.5.0: exact-input discovery (vars == 'auto') may also skip the fresh upload.
+        self.assertIn("if: ${{ !inputs.reuseCompletedParity && !(steps.discover-parity.outcome == 'success' && steps.discover-parity.outputs.reused == 'true') }}",
+                      self.parity_step("id: upload"))
         self.assertIn("plan-directory: ${{ runner.temp }}/sdk-parity-plan", self.parity_step("id: capture"))
         self.assertIn("path: ${{ runner.temp }}/sdk-parity-plan", source)
         parent_source = (ROOT / ".github/workflows/product-validation.yml").read_text()
@@ -685,7 +687,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
                    'plan', 'contract-validation',
                    'product-resume', 'sdk-completion-full-reuse', 'sdk-parity', 'merge-gate'}
         jobs = re.findall(r'(?m)^  ([a-z][a-z0-9-]*):$', self.source.split('\njobs:\n', 1)[1])
-        self.assertEqual(115, len(jobs))
+        self.assertEqual(116, len(jobs))
         for name in jobs:
             condition = self.job(name).split('    if:', 1)[1].split('\n    ', 1)[0]
             # The leading conjunction short-circuits even an always() producer.
@@ -864,7 +866,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
     def test_current_report_and_distinct_acceptance_cli_preserve_legacy_branch(self):
         parity = (ROOT / '.github/workflows/sdk-binding-parity.yml').read_text()
         upload = self.parity_step('id: upload_report')
-        self.assertIn('if: inputs.reuseCompletedParity\n', upload)
+        self.assertIn("if: inputs.reuseCompletedParity || (steps.discover-parity.outcome == 'success' && steps.discover-parity.outputs.reused == 'true')\n", upload)
         self.assertIn('path: ${{ runner.temp }}/hosted-parity-report/hosted-parity-report.json', upload)
         self.assertIn('overwrite: false', upload)
         self.assertLess(parity.index('id: parity-output'), parity.index('id: upload_report'))
@@ -876,7 +878,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         gate = self.job('merge-gate')
         for marker in ('name: Require an exact receipt set', 'name: Stage the exact reusable validation artifact'):
             block = gate.split('      - ' + marker + '\n', 1)[1].split('\n      - ', 1)[0]
-            self.assertIn("if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' }}", block)
+            self.assertIn("if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && !(github.event_name == 'merge_group' && needs.plan.outputs.validation_reused == 'true' && needs.plan.outputs.validation_reuse_kind == 'retained') }}", block)
         block = gate.split('      - name: Authenticate current-head acceptance without restoring product bodies\n', 1)[1].split('\n      - ', 1)[0]
         self.assertIn('if: inputs.fullReuseAcceptanceOnly\n', block)
         for name in ('FULL_REUSE_ACCEPTANCE_ONLY', 'RUNTIME_RECOVERY_ONLY', 'SDK_RECOVERY_ONLY',
@@ -1077,7 +1079,7 @@ class RetainedAndroidParentWorkflowTest(unittest.TestCase):
         self.assertIn('codex-agent-sdk-validation-contributions-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}', upload)
         gate = self.parent.split('  merge-gate:\n',1)[1]
         for name in ('Require an exact receipt set', 'Stage the exact reusable validation artifact'):
-            self.assertIn(name+"\n        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' }}", gate)
+            self.assertIn(name+"\n        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && !(github.event_name == 'merge_group' && needs.plan.outputs.validation_reused == 'true' && needs.plan.outputs.validation_reuse_kind == 'retained') }}", gate)
         self.assertIn("aggregate_retained_validation(plan, Path('build/ci/receipts')", gate)
         self.assertIn("canonical = any(os.environ[key] == 'true' for key in ('RETAINED_ANDROID', 'RETAINED_NODE_JS', 'RETAINED_CONSUMERS'))", gate)
         for field, expression in (("artifact_id", "int(os.environ['ARTIFACT_ID'])"),

@@ -155,7 +155,7 @@ class SdkWorkflowWiringTest(unittest.TestCase):
         caller = (ROOT / ".github/workflows/portable-reuse-proof.yml").read_text()
         cold = caller.split("  cold:\n", 1)[1].split("  warm:\n", 1)[0]
         self.assertIn("github.event.label.name == 'ci:reuse-refresh-proof'", cold)
-        self.assertIn("github.event.pull_request.number == 31", cold)
+        self.assertIn("github.event.pull_request.base.ref == 'main'", cold)
         self.assertIn("github.event.pull_request.head.repo.fork == false", cold)
         self.assertIn("uses: ./.github/workflows/reuse-qualification.yml", cold)
         self.assertIn("refresh: true", cold)

@@ -12,6 +12,7 @@ from products.inventory import canonical_json_bytes, load_canonical_json_bytes, 
 from products.receipt import write_output_manifest
 from products.restore import finalize_phase_object
 from products.sdk_campaign_selection import SDK_CAMPAIGN_INSTANCES
+from ci.tests import association_fixture
 from ci.tests.product_chain_support import write_receipt
 from ci.tests import test_runtime_resume_capture as resume_fixture
 
@@ -163,7 +164,8 @@ class SdkCampaignObservationTest(TestCase):
             return state
 
         with patch.object(observed.product_reuse, "api_json",
-                          side_effect=[fixture.artifact, fixture.run, fixture.commit, fixture.artifact]), \
+                          side_effect=association_fixture.sequence(
+                              [fixture.artifact, fixture.run, fixture.commit, fixture.artifact], fixture.association)), \
              patch.object(observed.product_reuse, "paginated_items", return_value=[fixture.job]), \
              patch.object(observed.product_reuse, "download_artifact_to_file",
                           side_effect=lambda _artifact, _token, destination, **_:
@@ -197,7 +199,8 @@ class SdkCampaignObservationTest(TestCase):
             return state
 
         with patch.object(observed.product_reuse, "api_json",
-                          side_effect=[fixture.run, fixture.commit, artifact]), \
+                          side_effect=association_fixture.sequence(
+                              [fixture.run, fixture.commit, artifact], fixture.association)), \
              patch.object(observed.product_reuse, "paginated_items", return_value=[job]), \
              patch.object(observed.product_reuse, "download_artifact_to_file",
                           side_effect=lambda _artifact, _token, destination, **_:

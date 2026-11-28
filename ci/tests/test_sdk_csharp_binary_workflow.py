@@ -439,13 +439,15 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
                 self.root / "build/rejected-after-exit", repository_root=self.root, environ={})
         self.assertFalse((self.root / "build/rejected-after-exit").exists())
 
-    def test_selected_csharp_original_uses_exact_carrier_and_keeps_cross_run_producer(self, deferred=False):
+    def test_selected_csharp_original_uses_exact_carrier_and_keeps_cross_run_producer(self, deferred=False,
+            original_pull_request=None, completed=None, rejected=None):
         stage = self.produce(self.ready,
             compatibility_request=self.sdk / "sdk-compatibility-request.json")["stage"]
         manifest = workflow.verify_output_manifest_identity(stage, "sdk", "csharp", "binary",
             "desktop", "0.8.0")
         original_producer = {**self.producer, "commit": "d" * 40, "tree": "e" * 40,
-            "runId": 20, "runAttempt": 2}
+            "runId": 20, "runAttempt": 2, **({} if original_pull_request is None
+                                             else {"pullRequest": original_pull_request})}
         planned = write_receipt(self.root / "selected-csharp-receipt.json", product="sdk",
             component="csharp", phase="binary", target="desktop", version="0.8.0",
             version_identity="0.8.0", outputs=manifest["outputs"], upstream=[],
@@ -467,7 +469,8 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
             prior_ready_plans={},
             prior_carrier_phases={workflow._INSTANCE: {**record, "transportSource": None}},
             completed_frozen=None, capture_deferred_object=None, ensure_original_source=None,
-            producer=self.producer, plan={"validationCommit": self.producer["commit"]})
+            producer=self.producer, plan={"validationCommit": self.producer["commit"],
+                                          "pullRequest": self.producer["pullRequest"]})
 
         captures = []
         if deferred:
@@ -483,11 +486,18 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
               patch.object(workflow.product_reuse, "_verified_product_state", return_value=selected),
               patch.object(workflow, "git_regular_blob_bytes",
                            return_value=(self.root / "gradle/release/keys/sdk-runtime-root.pub").read_bytes())):
-            with workflow.verified_selected_csharp_original(self.plan, self.discovery, self.state,
+            selected_original = lambda: workflow.verified_selected_csharp_original(
+                    self.plan, self.discovery, self.state,
                     sdk_inputs_artifact_id=10, sdk_inputs_artifact_sha256="sha256:" + "c" * 64,
                     trusted_workflow_sha="sha256:" + "d" * 64, keyring=self.keyring,
                     keys_directory=self.keys, repository_root=self.root,
-                    environ={}, token="fixture-token") as original:
+                    environ={}, token="fixture-token",
+                    **({} if completed is None else {"completed_frozen": completed}))
+            if rejected is not None:
+                with self.assertRaisesRegex(ValueError, rejected), selected_original():
+                    pass
+                return
+            with selected_original() as original:
                 captured_stage = original["stage"]
                 self.assertEqual(original_producer, original["receipt"]["producer"])
                 self.assertEqual(None, original["transportSource"])
@@ -513,6 +523,28 @@ class CSharpBinaryWorkflowTest(unittest.TestCase):
                             repository_root=self.root, environ={}, token="fixture-token")
                     self.assertFalse(destination.exists())
         self.assertFalse(captured_stage.exists())
+
+    def test_selected_owner_pinned_csharp_original_admits_only_the_consumer_scope(self):
+        """T4: a PR-31 original is admitted only as the capability's pinned receipt."""
+        import reuse_qualification as qualification
+        capability = object.__new__(qualification.CompletedFrozenReuse)
+        Capability = qualification.CompletedFrozenReuse
+        consumers = []
+        for pins, admitted, rejected in ((True, 2, None), (False, 2, "differs from its PR"),
+                                         (True, 3, r"admitted scope \[scope:consumer\]")):
+            with self.subTest(pins=pins, admitted=admitted), \
+                    patch.object(Capability, "pins_receipt", lambda _self, receipt, value=pins: value), \
+                    patch.object(Capability, "check_consumer", lambda _self, consumer: consumers.append(consumer)), \
+                    patch.object(Capability, "admitted_pull_request", lambda _self, value=admitted: value):
+                self.setUp()  # A fresh fixture tree per scenario.
+                self.test_selected_csharp_original_uses_exact_carrier_and_keeps_cross_run_producer(
+                    original_pull_request=31, completed=capability, rejected=rejected)
+        self.assertEqual(2, len(consumers))
+        self.assertTrue(all(consumer == {"kind": "ci", "producer": self.producer} for consumer in consumers))
+        # Without the native capability a different-PR original is still rejected.
+        self.setUp()
+        self.test_selected_csharp_original_uses_exact_carrier_and_keeps_cross_run_producer(
+            original_pull_request=31, completed=object(), rejected="differs from its PR")
 
     def test_selected_native_qualified_csharp_original_restores_only_its_deferred_object(self):
         self.test_selected_csharp_original_uses_exact_carrier_and_keeps_cross_run_producer(deferred=True)

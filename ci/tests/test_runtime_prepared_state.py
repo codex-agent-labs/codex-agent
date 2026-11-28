@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from ci.tests import test_sdk_runtime_capture as fixture
+from ci.tests.runner_scope import pin_runner_scope
 from ci import runtime_prepared_state as state
 from products.inventory import canonical_json_bytes, regular_file_inventory, sha256_bytes
 from products.receipt import write_output_manifest
@@ -21,6 +22,7 @@ from products.restore import store_local_object, write_carrier
 
 class RuntimePreparedStateTest(unittest.TestCase):
     def setUp(self):
+        pin_runner_scope(self)
         temporary = tempfile.TemporaryDirectory(prefix="prepared-state-test-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()

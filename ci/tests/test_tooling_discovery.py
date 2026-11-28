@@ -14,6 +14,7 @@ from unittest import mock
 
 from ci import tooling_discovery
 from ci.products.inventory import load_canonical_json_bytes, sha256_bytes
+from ci.tests import association_fixture
 from ci.tests import test_tooling_capture as capture_fixture
 
 
@@ -240,6 +241,7 @@ class ToolingDiscoveryTest(unittest.TestCase):
 
     def api(self, listings, payloads):
         fixture = self.fixture
+        association = association_fixture.live(fixture.run, fixture.source.commit)
 
         def request(url, token):
             self.assertEqual(TOKEN, token)
@@ -255,6 +257,8 @@ class ToolingDiscoveryTest(unittest.TestCase):
             if url == (f"https://api.github.com/repos/{capture_fixture.release_fixture.REPOSITORY}"
                        f"/git/commits/{fixture.producer['commit']}"):
                 return json.dumps(fixture.source.commit).encode()
+            if url in association:
+                return json.dumps(association[url]).encode()
             if url.startswith(f"{run_root}/attempts/{fixture.producer['runAttempt']}/jobs?"):
                 return json.dumps({"jobs": fixture.jobs}).encode()
             for artifact, raw in payloads.values():

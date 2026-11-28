@@ -67,8 +67,20 @@ class ToolingOnlyWorkflowTest(unittest.TestCase):
         normal=self.jobs['plan'];tooling=self.jobs['tooling-plan']
         shared=lambda job:job[job.index('    steps:\n')+len('    steps:\n'):job.index('      - id: impact\n')]
         self.assertEqual(shared(normal),shared(tooling))
-        impact=lambda job:job[job.index('      - id: impact\n'):job.index('      - id: validation-reuse\n') if '      - id: validation-reuse\n' in job else job.index('      - id: tooling\n')]
+        def impact(job):
+            start=job.index('      - id: impact\n')
+            following=re.compile(r'^      (?:- |# )', re.M).search(job, start + 1)
+            return job[start:following.start()]
         self.assertEqual(impact(normal),impact(tooling))
+        # The only step between the shared impact gate and validation reuse is the merge-group
+        # retained-reuse gh install; it exists only in the normal plan and only for merge_group.
+        native='      - id: retained-native-gh\n'
+        self.assertNotIn(native,tooling)
+        between=normal[normal.index('      - id: impact\n'):normal.index('      - id: validation-reuse\n')]
+        self.assertEqual(between.count('      - id: '),2)
+        step=normal[normal.index(native):normal.index('      - id: validation-reuse\n')]
+        self.assertEqual(step,native+"        if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && github.event_name == 'merge_group'\n"
+                         "        continue-on-error: true\n        run: bash .github/actions/restore-reuse-qualification/install-gh.sh\n")
         self.assertTrue(evaluate(condition(normal),tooling=False))
 
     def test_discovery_is_existing_full_authenticated_gate_before_missing_lane(self):

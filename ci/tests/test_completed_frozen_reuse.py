@@ -16,6 +16,7 @@ from products.inventory import canonical_json_bytes, load_canonical_json_bytes, 
 from products.receipt import compute_build_key, validate_phase_receipt
 from products.plan import _phase_version_identity
 from products.registry import PhaseInstanceId, phase_instance_dependencies
+from ci.tests.runner_scope import PR_31_RUNNER, pin_runner_scope
 from ci.tests.test_products import phase_receipt
 
 
@@ -53,6 +54,8 @@ class CompletedOwningInputComparisonTest(unittest.TestCase):
         for path in ("../outside", "directory/./input", "/absolute", "control\ninput", " backspace"):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 qualification._changed_inventory_paths({path: "same"}, {path: "same"})
+
+
 
 
 class CompletedFrozenReuseTest(unittest.TestCase):
@@ -423,6 +426,8 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 runtime_workflow.continuation_from_inspection(inspected, root / 'changed', completed_frozen=cap)
 
     def setUp(self):
+        # Completed reuse requests carry the consumer's admitted PR scope (9.5.0).
+        pin_runner_scope(self)
         self.spec = load_canonical_json_bytes((Path(__file__).parent / "data/hosted-frozen-reuse.json").read_bytes())
         self.spec["request"]["repositoryRevision"] = "d" * 40
         self.receipts = {}
@@ -884,6 +889,125 @@ class CompletedFrozenReuseTest(unittest.TestCase):
             unknown = {"product": "sdk", "component": "javascript", "phase": "validation", "target": "node"}
             self.assertIsNone(cap.envelope(unknown))
 
+    def advanced(self, cap, pull_request):
+        envelopes, values = [], {}
+        for row in self.spec["expectedResult"]["phases"]:
+            instance = PhaseInstanceId(*(row[field] for field in FIELDS))
+            receipt = self.receipts[instance]
+            envelopes.append(cap.envelope(row, canonical_json_bytes(receipt)))
+            values[instance] = {"inventory": receipt["inputs"]["inventory"],
+                "versions": self.spec["request"]["versions"], "flags_digest": receipt["inputs"]["flagsDigest"],
+                "toolchain_profile_digest": receipt["inputs"]["toolchainProfileDigest"], "output_schema_version": 1}
+        with patch.object(reuse, "_plan", side_effect=AssertionError("repeated semantic planning")), \
+                patch.object(reuse, "verify_object", side_effect=AssertionError("unrelated product body")), \
+                patch.object(reuse, "verify_contract_execution_projection", side_effect=AssertionError("repeated execution")):
+            result, _ = reuse.advance_reuse(tuple(values), values, envelopes,
+                reuse.LookupSession(repository=qualification.REPOSITORY, pull_request=pull_request),
+                completed_frozen=cap)
+        return result
+
+    def test_lookup_session_is_bound_to_the_consumer_scope_not_the_issuer_pr(self):
+        pr = lambda number: {**PR_31_RUNNER, "GITHUB_ACTIONS": "true", "GITHUB_REF": f"refs/pull/{number}/merge"}
+        queue = {**PR_31_RUNNER, "GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "merge_group",
+                 "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-37-" + "f" * 40}
+        scope = r"session differs from the consumer's admitted scope \[scope:consumer\]"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, _ = self.fetched(self.directory(root / "pr"))
+            with patch.dict(os.environ, pr(37), clear=True):
+                # A PR-37 session plans the RA-pinned PR-31 record.
+                self.assertTrue(self.advanced(cap, 37)["fullReuse"])
+                # A session naming the issuer PR or another PR is rejected.
+                for number in (31, 38, None):
+                    with self.subTest(number=number), self.assertRaisesRegex(ValueError, scope):
+                        self.advanced(cap, number)
+                # Repository and empty-catalog checks stay exact.
+                with self.assertRaisesRegex(ValueError, "exact repository and empty candidate catalogs"):
+                    reuse.advance_reuse((), {}, [], reuse.LookupSession(
+                        repository="fork-owner/codex-agent", pull_request=37), completed_frozen=cap)
+            # A merge_group pr-37 session is accepted; its issuer PR is not.
+            queued, _ = self.fetched(self.directory(root / "queue"))
+            with patch.dict(os.environ, queue, clear=True):
+                self.assertTrue(self.advanced(queued, 37)["fullReuse"])
+                with self.assertRaisesRegex(ValueError, scope):
+                    self.advanced(queued, 31)
+            # A hosted runner without a PR scope is rejected outright.
+            with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "GITHUB_RUN_ID": "1"}, clear=True), \
+                    self.assertRaisesRegex(qualification.QualificationIncompatible, "admitted scope"):
+                self.advanced(queued, 31)
+            # Read-only local acceptance (no runner identity, no consumer) stays on the issuer PR.
+            local, _ = self.fetched(self.directory(root / "local"))
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(31, local.admitted_pull_request())
+                self.assertTrue(self.advanced(local, 31)["fullReuse"])
+                with self.assertRaisesRegex(ValueError, scope):
+                    self.advanced(local, 37)
+
+    def test_pinned_original_source_is_admitted_for_the_consumer_scope_only(self):
+        """T4 at the original-source gate: same PR, or a capability-pinned PR-31 original."""
+        pr = lambda number: {**PR_31_RUNNER, "GITHUB_ACTIONS": "true", "GITHUB_REF": f"refs/pull/{number}/merge"}
+        queue = {**PR_31_RUNNER, "GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "merge_group",
+                 "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-37-" + "f" * 40}
+        earlier = "not an earlier producer for this consumer"
+
+        class Reached(Exception):
+            pass
+
+        def gate(plan, producer, source, pinned):
+            # Only the scope gate is under test: the first network read means it passed.
+            with patch.object(product_reuse, "_original_ci_run", side_effect=Reached), \
+                    self.assertRaises(Reached):
+                product_reuse._authenticate_runtime_original_reference_source(
+                    plan, producer, source, trusted_workflow_sha="a" * 40, token="fixture", pinned=pinned)
+
+        def rejected(plan, producer, source, pinned, pattern=earlier):
+            with patch.object(product_reuse, "_original_ci_run", side_effect=AssertionError("gate passed")), \
+                    self.assertRaisesRegex(ValueError, pattern):
+                product_reuse._authenticate_runtime_original_reference_source(
+                    plan, producer, source, trusted_workflow_sha="a" * 40, token="fixture", pinned=pinned)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, _ = self.fetched(self.directory(root / "pr"))
+            source = cap.runtime_sources()[0]
+            original = source["receipt"]["producer"]
+            self.assertEqual(("pull_request", 31), (original["event"], original["pullRequest"]))
+            # The pinned phase receipt itself is pinned; any other receipt is not.
+            self.assertTrue(cap.pins_receipt(source["receipt"]))
+            self.assertFalse(cap.pins_receipt({**source["receipt"], "producer": {**original, "pullRequest": 37}}))
+            self.assertFalse(cap.pins_receipt({**source["receipt"], "buildKey": "sha256:" + "0" * 64}))
+            consumer = {**original, "pullRequest": 37, "runId": original["runId"] + 10**6, "runAttempt": 1}
+            plan = {"repository": qualification.REPOSITORY, "event": "pull_request", "pullRequest": 37}
+            with patch.dict(os.environ, pr(37), clear=True):
+                # A PR-37 consumer is admitted for the capability-pinned PR-31 original.
+                gate(plan, consumer, source, cap)
+                # Without the capability, the ordinary same-PR rule still rejects it.
+                rejected(plan, consumer, source, None)
+                # An unpinned PR-31 original (other upload) or a PR-38 original is rejected.
+                rejected(plan, consumer, {**source, "artifactId": source["artifactId"] + 1}, cap)
+                rejected(plan, consumer, {**source, "artifactSha256": "sha256:" + "0" * 64}, cap)
+                other = {**source, "receipt": {**source["receipt"], "producer": {**original, "pullRequest": 38}}}
+                rejected(plan, consumer, other, cap)
+                # Repository, consumer event and earlier-run ordering stay exact.
+                rejected({**plan, "repository": "fork-owner/codex-agent"}, consumer, source, cap)
+                rejected({**plan, "event": "workflow_dispatch"}, consumer, source, cap)
+                rejected(plan, {**consumer, "runId": original["runId"], "runAttempt": original["runAttempt"]},
+                         source, cap)
+                rejected(plan, {**consumer, "runId": original["runId"] - 1}, source, cap)
+                # The plan must carry the consumer's admitted scope.
+                rejected({**plan, "pullRequest": 38}, consumer, source, cap, r"admitted scope \[scope:consumer\]")
+                # A consumer of another PR than the runner is rejected by the capability.
+                with self.assertRaisesRegex(qualification.QualificationIncompatible, "scope:consumer"):
+                    gate({**plan, "pullRequest": 38}, {**consumer, "pullRequest": 38}, source, cap)
+            # A merge_group pr-37 consumer is admitted; its plan carries PR 37.
+            queued, _ = self.fetched(self.directory(root / "queue"))
+            merge_group = {**consumer, "event": "merge_group", "pullRequest": None}
+            with patch.dict(os.environ, queue, clear=True):
+                gate({**plan, "event": "merge_group"}, merge_group, source, queued)
+                rejected({**plan, "event": "merge_group", "pullRequest": 31}, merge_group, source, queued,
+                         r"admitted scope \[scope:consumer\]")
+                rejected({**plan, "event": "merge_group"}, merge_group, source, None)
+
     def test_native_failure_and_plain_cached_flags_cannot_create_capability(self):
         with self.assertRaises(TypeError):
             qualification.CompletedFrozenReuse(self.spec, [], True, revision="d" * 40)
@@ -920,6 +1044,62 @@ class CompletedFrozenReuseTest(unittest.TestCase):
         for field, value in cases:
             with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary, self.assertRaises(ValueError):
                 self.fetched(Path(temporary).resolve(), proof={**self.proof, field: value})
+
+    @staticmethod
+    def directory(path):
+        path.mkdir()
+        return path
+
+    def test_request_pull_request_is_the_consumer_scope_not_the_frozen_spec(self):
+        self.assertEqual(31, self.spec["request"]["pullRequest"])
+        pr = lambda number: {**PR_31_RUNNER, "GITHUB_REF": f"refs/pull/{number}/merge"}
+        queue = {**PR_31_RUNNER, "GITHUB_EVENT_NAME": "merge_group",
+                 "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-37-" + "f" * 40}
+        request = lambda number: {**copy.deepcopy(self.spec["request"]), "pullRequest": number}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, _ = self.fetched(self.directory(root / "pr"))
+            with patch.dict(os.environ, pr(37), clear=True):
+                # A PR-37 consumer of the RA-pinned PR-31 record is accepted.
+                self.assertEqual(50, len(cap.check_request(request(37))))
+                # The request must name the consumer's scope, not the spec's or another.
+                for number in (31, 38, None):
+                    with self.subTest(number=number), self.assertRaisesRegex(
+                            qualification.QualificationIncompatible, r"admitted scope \[scope:consumer\]"):
+                        cap.check_request(request(number))
+                # Every other field stays exact under the new consumer.
+                for field, value in (("repository", "fork-owner/codex-agent"),
+                                     ("versions", {**self.spec["request"]["versions"], "sdk": "9.9.9"}),
+                                     ("catalogs", {**self.spec["request"]["catalogs"], "stable": [{"new": 1}]}),
+                                     ("repositoryRevision", "e" * 40)):
+                    with self.subTest(field=field), self.assertRaises(qualification.QualificationIncompatible):
+                        cap.check_request({**request(37), field: value})
+                changed = request(37)
+                changed["availableObjects"][0]["objectSha256"] = "sha256:" + "0" * 64
+                with self.assertRaisesRegex(qualification.QualificationIncompatible, "exact frozen candidates"):
+                    cap.check_request(changed)
+            # A merge_group pr-37 consumer is accepted, bound to check_consumer.
+            queued, _ = self.fetched(self.directory(root / "queue"))
+            receipt = next(iter(self.receipts.values()))
+            merge_group = {"kind": "ci", "producer": {**receipt["producer"], "repository": qualification.REPOSITORY,
+                                                      "event": "merge_group", "pullRequest": None}}
+            with patch.dict(os.environ, queue, clear=True):
+                queued.check_consumer(merge_group)
+                self.assertEqual(50, len(queued.check_request(request(37))))
+                with self.assertRaisesRegex(qualification.QualificationIncompatible, "scope:consumer"):
+                    queued.check_request(request(31))
+            # Admitted scope disagreeing with the runner rejects; with no runner
+            # scope the admitted one binds.
+            with patch.dict(os.environ, pr(38), clear=True), \
+                    self.assertRaisesRegex(qualification.QualificationIncompatible, "differs from its runner scope"):
+                queued.check_request(request(37))
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(50, len(queued.check_request(request(37))))
+            # No admitted and no runner scope: rejected.
+            missing, _ = self.fetched(self.directory(root / "missing"))
+            with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(
+                    qualification.QualificationIncompatible, "requires the consumer's admitted scope"):
+                missing.check_request(request(31))
 
     def test_current_candidates_catalogs_and_receipts_are_exact(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -967,9 +1147,31 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 self.assertEqual(captured, restored)
             with self.assertRaises((ValueError, FileNotFoundError)):
                 restore.verify_carrier(root / "carrier", (instance,), consumer, object_root=root)
-            with self.assertRaisesRegex(ValueError, "original PR scope"):
-                restore.verify_carrier(root / "carrier", (instance,), {"kind": "ci", "producer": {
-                    **producer, "pullRequest": 32}}, object_root=root, completed_frozen=cap)
+            # Owner-pinned carriers admit any same-repository PR or merge-queue
+            # CI consumer (9.5.0 T4c); foreign repositories and other events still reject.
+            # One capability serves one consumer: its admitted scope cannot change.
+            with self.assertRaisesRegex(qualification.QualificationIncompatible, "changed its scope"):
+                cap.check_consumer({"kind": "ci", "producer": {**producer, "pullRequest": 32}})
+            (root / "fresh-consumer").mkdir()
+            cap, _ = self.fetched(root / "fresh-consumer")
+            cap.check_consumer({"kind": "ci", "producer": {**producer, "pullRequest": 32}})
+            queue = {"GITHUB_REPOSITORY": "codex-agent-labs/codex-agent", "GITHUB_EVENT_NAME": "merge_group",
+                     "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-32-" + "f" * 40}
+            merge_group = {"kind": "ci", "producer": {**producer, "event": "merge_group", "pullRequest": None}}
+            with patch.dict(os.environ, queue, clear=True):
+                cap.check_consumer(merge_group)
+            # N4: a merge_group consumer must execute on its merge-queue ref.
+            for environment in ({}, {**queue, "GITHUB_REF": "refs/heads/feature"},
+                                {**queue, "GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF": "refs/pull/32/merge"}):
+                with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True), \
+                        self.assertRaises(qualification.QualificationIncompatible):
+                    cap.check_consumer(merge_group)
+            for foreign in ({**producer, "repository": "fork-owner/codex-agent"},
+                            {**producer, "event": "push", "pullRequest": None},
+                            {**producer, "event": "merge_group"}):
+                with self.subTest(foreign=foreign), self.assertRaisesRegex(ValueError, "same-repository CI consumer"):
+                    restore.verify_carrier(root / "carrier", (instance,), {"kind": "ci", "producer": foreign},
+                        object_root=root, completed_frozen=cap)
 
     def test_only_proved_reference_bodies_and_aliases_are_deferred(self):
         from runtime_reference_transport import selected_reference_paths
@@ -1286,6 +1488,76 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                     product_reuse._prior_failed_runtime_objects(root / "prior", root, **options)
                 self.assertEqual(46, len(started))  # Join every observation before returning a failure.
                 self.assertEqual(before, inventory.regular_file_inventory(root / "prior"))
+
+    def test_prior_runtime_receipts_admit_pinned_pr31_originals_for_the_consumer_scope(self):
+        """T4 at the prior-Runtime gate for a PR-37 consumer of the pinned PR-31 receipts."""
+        pr = lambda number: {**PR_31_RUNNER, "GITHUB_ACTIONS": "true", "GITHUB_REF": f"refs/pull/{number}/merge"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, _ = self.fetched(root)
+            issuer = dict(repository=qualification.REPOSITORY, pullRequest=31,
+                          event="pull_request", runId=8, runAttempt=1)
+            official = dict(id=7, run_attempt=1, event="pull_request", path=".github/workflows/ci.yml",
+                status="completed", conclusion="failure", pull_requests=[{"number": 31}],
+                repository={"full_name": qualification.REPOSITORY, "fork": False},
+                head_repository={"full_name": qualification.REPOSITORY, "fork": False})
+            runs = {"current": official}
+
+            def observe(_plan, _producer, source, **kwargs):
+                self.assertIs(qualification.CompletedFrozenReuse, type(kwargs.get("pinned")))
+                receipt = source["receipt"]
+                name = "product-validation / runtime-" + "-".join(
+                    receipt[field] for field in ("component", "phase", "target"))
+                return {"id": 71, "digest": POLICY}, {}, [{"run": official,
+                    "testedCommit": receipt["producer"]["commit"],
+                    "jobs": [{"id": 71, "name": name}]}], "a" * 40
+
+            def locator(_artifact, _workflow, instance, _job):
+                return {**{name: getattr(instance, name) for name in FIELDS},
+                        "artifact": {"id": 71, "digest": POLICY}}
+
+            with patch.object(product_reuse, "_authenticate_runtime_original_reference_source", side_effect=observe), \
+                    patch.object(product_reuse, "_runtime_original_locator", side_effect=locator), \
+                    patch.object(product_reuse, "api_json", side_effect=lambda *_: runs["current"]), \
+                    patch.object(product_reuse, "_runtime_prior_workflow_sha", return_value="a" * 40):
+                expected = product_reuse._capture_completed_runtime_controls({}, issuer, root / "prior", root,
+                    completed_frozen=cap, trusted_workflow_sha="a" * 40, token="fixture")
+                consumer = {**issuer, "pullRequest": 37}
+                plan = {**consumer}
+
+                def prior(capability, plan=plan, consumer=consumer):
+                    return product_reuse._prior_failed_runtime_objects(root / "prior", root, plan=plan,
+                        consumer_producer=consumer, completed_frozen=capability,
+                        trusted_workflow_sha="a" * 40, token="fixture")
+
+                with patch.dict(os.environ, pr(37), clear=True):
+                    # (1) Pinned receipts whose merged PR-31 run lost its live association: admitted.
+                    runs["current"] = {**official, "pull_requests": []}
+                    fresh, _ = self.fetched(self.directory(root / "pr37"))
+                    self.assertEqual(expected, sorted(prior(fresh), key=product_reuse._identity))
+                    # A live PR-31 association is admitted too.
+                    runs["current"] = official
+                    fresh, _ = self.fetched(self.directory(root / "pr37-live"))
+                    self.assertEqual(expected, sorted(prior(fresh), key=product_reuse._identity))
+                    # (4) A pinned receipt whose official run belongs to another PR is rejected.
+                    runs["current"] = {**official, "pull_requests": [{"number": 38}]}
+                    fresh, _ = self.fetched(self.directory(root / "pr38-run"))
+                    with self.assertRaisesRegex(ValueError, "differs from official CI"):
+                        prior(fresh)
+                    runs["current"] = {**official, "pull_requests": []}
+                    # (2) A PR-31 receipt the capability does not pin keeps the same-PR rule.
+                    fresh, _ = self.fetched(self.directory(root / "unpinned"))
+                    with patch.object(qualification.CompletedFrozenReuse, "pins_receipt", return_value=False), \
+                            self.assertRaisesRegex(ValueError, "not an original PR phase"):
+                        prior(fresh)
+                    # (3) A plan whose PR differs from the runner's admitted scope is rejected.
+                    fresh, _ = self.fetched(self.directory(root / "plan38"))
+                    with self.assertRaisesRegex(ValueError, r"admitted scope \[scope:consumer\]"):
+                        prior(fresh, plan={**plan, "pullRequest": 38})
+                    # A consumer of another PR than the runner is rejected by the capability.
+                    fresh, _ = self.fetched(self.directory(root / "consumer38"))
+                    with self.assertRaisesRegex(qualification.QualificationIncompatible, "scope:consumer"):
+                        prior(fresh, plan={**plan, "pullRequest": 38}, consumer={**consumer, "pullRequest": 38})
 
     def test_mixed_recovery_keeps_new_aggregate_on_full_original_body_path(self):
         import shutil

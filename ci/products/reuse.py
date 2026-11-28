@@ -1741,9 +1741,14 @@ def advance_reuse(
         from reuse_qualification import CompletedFrozenReuse
         if type(completed_frozen) is not CompletedFrozenReuse:
             raise ValueError("Completed reuse requires the concrete native semantic verifier")
-        if (session.repository != "codex-agent-labs/codex-agent" or session.pull_request != 31
+        if (session.repository != "codex-agent-labs/codex-agent"
                 or any(session._remote.values()) or session._local is not None):
             raise ValueError("Completed frozen reuse requires its exact repository and empty candidate catalogs")
+        # The session is the current consumer's: bind it to the consumer's admitted
+        # PR scope (PR N, or merge-queue pr-N), not to the pinned issuer PR.
+        if session.pull_request != completed_frozen.admitted_pull_request():
+            raise ValueError(
+                "Completed frozen reuse session differs from the consumer's admitted scope [scope:consumer]")
     if sdk_apple_validation_admission is not None and type(sdk_apple_validation_admission) is not AppleValidationAdmission:
         raise ValueError("Apple validation admission requires the concrete full verifier")
     if sdk_apple_package_admission is not None and type(sdk_apple_package_admission) is not ApplePackageAdmission:

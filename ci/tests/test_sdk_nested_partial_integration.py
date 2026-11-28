@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from ci.tests import association_fixture
 from ci.tests import test_runtime_resume_capture as resume_fixture
 from ci import product_reuse as packaged_product_reuse
 from ci.products.index import SignedProductIndex, verify_signed_product_index
@@ -77,7 +78,8 @@ class NestedPartialIntegrationTest(unittest.TestCase):
             "digest": sha256_bytes(raw), "size_in_bytes": len(raw),
             "created_at": "2026-09-13T10:01:00Z"}
         destination = self.root / "build/sdk-nested-capture"
-        with patch.object(product_reuse, "api_json", side_effect=[source.run, source.commit, artifact]), \
+        with patch.object(product_reuse, "api_json", side_effect=association_fixture.sequence(
+                [source.run, source.commit, artifact], source.association)), \
                 patch.object(product_reuse, "paginated_items", return_value=[job]), \
                 patch.object(product_reuse, "download_artifact_to_file",
                     side_effect=lambda _artifact, _token, output, **_:

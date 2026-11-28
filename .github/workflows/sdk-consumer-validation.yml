@@ -127,6 +127,9 @@ jobs:
     if: inputs.retainedInstalledConsumers
     strategy:
       fail-fast: false
+      # Each lane re-reads ~330 GitHub API calls of retained provenance in its
+      # first minutes; bound the burst on the shared 5000/h installation quota.
+      max-parallel: 5
       matrix:
         include: ${{ fromJSON(inputs.matrix) }}
     runs-on: ${{ matrix.runner }}

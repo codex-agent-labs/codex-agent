@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -49,6 +50,15 @@ class CacheIdentityContractTest(unittest.TestCase):
                 else:
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(output.read_text(), f"write={expected}\n")
+
+    def test_shared_kotlin_setup_pins_the_exact_codec_jdk(self) -> None:
+        # Retained Apple packaging binds the exact JVM (ios-package.json); a floating
+        # major would follow whatever Temurin the runner image preinstalls.
+        action = (REPOSITORY / ".github/actions/setup-kmp/action.yml").read_text()
+        block = action.split("uses: actions/setup-java@", 1)[1].split("    - ", 1)[0]
+        self.assertIn("distribution: temurin\n        java-version: '17.0.21+9'\n", block)
+        policy = json.loads((REPOSITORY / "gradle/release/toolchains/sdk/ios-package.json").read_text())
+        self.assertEqual(policy["javaRuntime"]["runtimeVersion"], "17.0.21+9")
 
     def test_product_worker_restores_dependencies_without_init_injection(self) -> None:
         action = (REPOSITORY / ".github/actions/setup-kmp/action.yml").read_text()

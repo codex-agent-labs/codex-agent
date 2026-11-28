@@ -116,6 +116,10 @@ class InstalledConsumerWorkflowTest(unittest.TestCase):
         worker = self.child.split('\n  installed-consumer:\n', 1)[1]
         self.assertIn('name: ${{ matrix.lane }}', worker)
         self.assertIn('fail-fast: false', worker)
+        # Retained lanes share one 5000/h API installation quota; bound the burst.
+        strategy = worker.split('    strategy:\n', 1)[1].split('    runs-on:', 1)[0]
+        self.assertIn('      max-parallel: 5\n', strategy)
+        self.assertNotIn('max-parallel', self.child.split('\n  installed-consumer:\n', 1)[0])
         self.assertIn("CODEX_AGENT_THROUGHPUT_TRACE: '1'", worker)
         self.assertIn('restore-reuse-qualification@reuse-authority', worker)
         self.assertIn('--completed-frozen-policy "${CODEX_AGENT_COMPLETED_REUSE_POLICY:?native authority required}"', worker)

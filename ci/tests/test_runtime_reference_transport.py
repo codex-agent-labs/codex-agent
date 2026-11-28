@@ -10,6 +10,7 @@ from unittest import mock
 
 from ci.tests.test_product_resume_capture import product_reuse
 from ci.tests.test_product_resume_capture import archive
+from ci.tests import association_fixture
 from ci.tests import test_runtime_resume_capture as resume_fixture
 from runtime_reference_transport import (
     REFERENCE_NAME, stage_reference_handoff, resolve_reference_handoff, validate_references,
@@ -566,10 +567,11 @@ class RuntimeReferenceTransportTest(unittest.TestCase):
                 self.assertIn('original', target.parts)
                 return _copy_exact(source, target, record)
             ranges = RangeOpener({101: base_raw})
-            with mock.patch.object(product_reuse, 'api_json', side_effect=[
+            with mock.patch.object(product_reuse, 'api_json', side_effect=association_fixture.sequence([
                     fixture.run, fixture.commit, artifact,
                     *([] if sdk else [original]),
-                    {**fixture.run, "run_attempt": 2} if sdk else fixture.run, fixture.commit, original]), \
+                    {**fixture.run, "run_attempt": 2} if sdk else fixture.run, fixture.commit, original],
+                    fixture.association)), \
                     mock.patch.object(product_reuse, 'paginated_items', side_effect=[[jobs[0]], [jobs[1]]]), \
                     mock.patch.object(product_reuse, 'download_artifact_to_file',
                         side_effect=lambda item, token, path, **kwargs:
