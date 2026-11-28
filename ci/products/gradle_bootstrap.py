@@ -273,6 +273,32 @@ _SDK_SEED_SCRIPT = """gradle.projectsEvaluated {
 """
 
 
+# The seed is the one online resolution; registries refuse hosted runners
+# transiently (HTTP 429/5xx, resets). Strict verification metadata still pins
+# every checksum, so a later attempt can only fetch the same pinned bytes.
+_SDK_SEED_RETRY_DELAYS = (10, 30)
+
+
+def _run_online_seed(command, root: Path, environment, destination: Path) -> None:
+    """Retry only a nonzero Gradle exit; gradle.log is always the latest attempt."""
+    log_path = destination / "gradle.log"
+    attempts = len(_SDK_SEED_RETRY_DELAYS) + 1
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            # Keep each earlier attempt's exact log; never reuse or truncate one.
+            previous = destination / f"gradle-attempt-{attempt - 1}.log"
+            os.link(log_path, previous)
+            log_path.unlink()
+        with log_path.open("xb") as log:
+            result = subprocess.run(command, cwd=root, env=dict(environment), stdout=log,
+                                    stderr=subprocess.STDOUT, check=False)
+        if not result.returncode:
+            return
+        if attempt < attempts:
+            time.sleep(_SDK_SEED_RETRY_DELAYS[attempt - 1])
+    raise ValueError(f"Pinned SDK dependency seeding failed after {attempts} attempts; see {log_path}")
+
+
 def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
                                  environment, destination: Path, *, platform_name=None) -> None:
     """Resolve only pinned build dependencies; the product command stays offline.
@@ -339,7 +365,7 @@ def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
     command = [*product_command[:product_command.index("--offline")],
                "-p", str(destination / "gradle/build-logic"), "-I", str(script),
                "resolveSdkBuildDependencies", "--dependency-verification=strict",
-               "--no-daemon", "--no-configuration-cache", "--console=plain"]
+               "--no-daemon", "--no-configuration-cache", "--console=plain", "--stacktrace"]
     session = None if _is_windows() else _VERIFICATION_SESSION.get()
     cache = Path(environment.get("GRADLE_USER_HOME", str(Path.home() / ".gradle")))
     key = None
@@ -358,11 +384,7 @@ def seed_sdk_gradle_dependencies(root: Path, revision: str, wrapper: Path,
             write_canonical_json(destination / "seed-timing.json", {"elapsedNs": 0, "reusedInProcess": True})
             return
     started = time.monotonic_ns()
-    with (destination / "gradle.log").open("xb") as log:
-        result = subprocess.run(command, cwd=root, env=dict(environment), stdout=log,
-                                stderr=subprocess.STDOUT, check=False)
-    if result.returncode:
-        raise ValueError(f"Pinned SDK dependency seeding failed; see {destination / 'gradle.log'}")
+    _run_online_seed(command, root, environment, destination)
     write_canonical_json(destination / "seed-timing.json", {
         "elapsedNs": time.monotonic_ns() - started, "reusedInProcess": False})
     if key is not None:
