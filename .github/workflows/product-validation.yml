@@ -888,6 +888,8 @@ jobs:
       lane_ios_swift_tests_test: ${{ steps.impact.outputs.lane_ios_swift_tests_test }}
       validation_reused: ${{ steps.validation-reuse.outputs.reused }}
       validation_source_run_id: ${{ steps.validation-reuse.outputs.source_run_id }}
+      validation_source_run_attempt: ${{ steps.validation-reuse.outputs.source_run_attempt }}
+      validation_reuse_kind: ${{ steps.validation-reuse.outputs.kind }}
       product_full_reuse: ${{ steps.product-reuse.outputs.full_reuse }}
       product_target_jobs_required: ${{ steps.product-reuse.outputs.target_jobs_required }}
       product_reuse_reason: ${{ steps.product-reuse.outputs.product_reuse_reason }}
@@ -969,6 +971,7 @@ jobs:
         if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && github.event_name != 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          TRUSTED_WORKFLOW_SHA: ${{ steps.publication.outputs.publisher-sha }}
         run: |
           python3 - <<'PY'
           import json, os, subprocess, sys
@@ -988,6 +991,19 @@ jobs:
           if any(isinstance(item, dict) and item.get('name') == name and item.get('expired') is False for item in artifacts):
               subprocess.run([sys.executable, 'ci/validation_reuse.py', 'discover', '--plan', 'build/ci/impact-plan.json',
                   '--destination', 'build/ci/reused-validation', '--github-output', os.environ['GITHUB_OUTPUT']], check=True)
+          elif os.environ.get('GITHUB_EVENT_NAME') == 'merge_group':
+              # S1050: an identical-tree merge group may reuse the final green PR attempt's
+              # retained contributions (never schema-1); any doubt writes reused=false.
+              try:
+                  from producer_scope import discover_retained_pr_validation, write_step_outputs
+                  write_step_outputs(os.environ['GITHUB_OUTPUT'], discover_retained_pr_validation(
+                      Path('build/ci/impact-plan.json'), Path('build/ci/reused-retained-validation'),
+                      environ=os.environ, repository_root=Path.cwd(),
+                      trusted_workflow_sha=os.environ.get('TRUSTED_WORKFLOW_SHA')))
+              except Exception as error:
+                  print('[route:merge-queue-reuse:error] reused=false: ' + type(error).__name__)
+                  with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                      output.write('reused=false\n')
           else:
               with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
                   output.write('reused=false\n')
@@ -7910,7 +7926,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - name: Require an exact receipt set
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && needs.plan.outputs.validation_reuse_kind != 'retained' }}
         env:
           VALIDATION_REUSED: ${{ needs.plan.outputs.validation_reused }}
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
@@ -7935,7 +7951,7 @@ jobs:
           run-id: ${{ needs.sdk-parity.outputs.artifact_run_id }}
           path: build/ci/cross-language-bindings
       - name: Stage the exact reusable validation artifact
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && needs.plan.outputs.validation_reuse_kind != 'retained' }}
         env:
           M8_REQUIRED: ${{ needs.plan.outputs.lane_ios_swift_tests_test }}
           M11_REQUIRED: ${{ needs.plan.outputs.native_wrappers }}
@@ -7973,12 +7989,43 @@ jobs:
           count=$(find "$validation_root" -maxdepth 1 -type f | wc -l | tr -d ' ')
           test "$count" -eq 2 || test "$count" -eq 11 || test "$count" -eq 16
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && needs.plan.outputs.validation_reuse_kind != 'retained' }}
         with:
           if-no-files-found: error
           overwrite: true
           name: codex-agent-ci-validation-${{ needs.plan.outputs.validation_tree }}
           path: build/ci/final-validation/*
+          compression-level: 0
+          retention-days: 90
+      - name: Re-verify the merge-group retained PR validation
+        if: ${{ !inputs.fullReuseAcceptanceOnly && github.event_name == 'merge_group' && needs.plan.outputs.validation_reused == 'true' && needs.plan.outputs.validation_reuse_kind == 'retained' }}
+        env:
+          TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
+          SOURCE_RUN_ID: ${{ needs.plan.outputs.validation_source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ needs.plan.outputs.validation_source_run_attempt }}
+        run: |
+          python3 -B - <<'PYCODE'
+          import os, re, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path('ci').resolve()))
+          from producer_scope import stage_merge_group_retained_validation
+          for name in ('SOURCE_RUN_ID', 'SOURCE_RUN_ATTEMPT'):
+              if re.fullmatch(r'[1-9][0-9]{0,19}', os.environ[name]) is None:
+                  raise ValueError('Retained PR validation source identity is not exact')
+          # Offline: the plan-job bundle, the current plan and this runner's scope; never schema-1.
+          stage_merge_group_retained_validation(Path('build/ci/plan/reused-retained-validation'),
+              Path('build/ci/plan/impact-plan.json'), Path('build/ci/merge-group-retained-validation'),
+              repository_root=Path.cwd(), environ=os.environ, trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
+              source_run_id=int(os.environ['SOURCE_RUN_ID']), source_run_attempt=int(os.environ['SOURCE_RUN_ATTEMPT']))
+          PYCODE
+      - name: Preserve the distinct merge-group retained PR validation
+        if: ${{ !inputs.fullReuseAcceptanceOnly && github.event_name == 'merge_group' && needs.plan.outputs.validation_reused == 'true' && needs.plan.outputs.validation_reuse_kind == 'retained' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-merge-group-retained-validation-${{ needs.plan.outputs.validation_tree }}
+          path: build/ci/merge-group-retained-validation
+          if-no-files-found: error
+          overwrite: false
           compression-level: 0
           retention-days: 90
       - if: ${{ !inputs.fullReuseAcceptanceOnly && (steps.restore-reused-native-wrapper-release.outputs.restored == 'true') }}

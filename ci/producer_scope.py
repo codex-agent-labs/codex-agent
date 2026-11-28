@@ -19,6 +19,11 @@ for the owner-pinned PR 31 (merged, so no production run of it still carries
 a live association). ``admit()`` is called by discovered SDK parity reuse
 (``sdk_parity_reuse``). ``landed()`` (T4b) has no production caller yet: no
 path proposes cross-PR candidates, so cross-PR reuse is simply not offered.
+
+The merge-group retained-validation section at the end (S1050, Option A')
+is the one exception to "pure": ``discover_retained_pr_validation`` issues
+fixed read-only GETs through ``GitHubReads`` (or an injected reader) and
+``verify_retained_bundle`` re-checks the staged bytes offline.
 """
 
 from __future__ import annotations
@@ -603,3 +608,569 @@ def admit(producer: Mapping[str, Any], observation: Mapping[str, Any],
     if event in CONSUMER_EVENTS and observation.get("landed") is True:
         return {"admitted": True, "rule": "landed", "scope": scope}
     raise ScopeRejected("foreign-scope", "Producer scope is neither the consumer's, landed, nor pinned")
+
+
+# Merge-group reuse of a retained PR validation (S1050, Option A′) ----------------
+#
+# A green retained-path PR run publishes no schema-1 ``codex-agent-ci-validation``
+# aggregate (its lanes are proven by originals of other runs), so the merge
+# queue would otherwise rebuild everything. An identical-tree merge group may
+# instead reuse the final green PR attempt's own retained contributions. That
+# never relabels them as schema-1 lane provenance: the merge gate publishes a
+# distinct ``codex-agent-merge-group-retained-validation-<tree>`` artifact.
+# Every check below is exact; any doubt returns ``reused=false`` (full path).
+
+RETAINED_KIND = "retained"
+RETAINED_SOURCE_KIND = "merge-group-retained-validation-source"
+RETAINED_GATE_JOB = "product-validation / CI / merge-gate"
+RETAINED_OUTER_GATE_JOB = "CI / merge-gate"
+PRODUCT_VALIDATION_REFERENCE = f"{REPOSITORY}/.github/workflows/product-validation.yml@reuse-authority"
+REUSE_AUTHORITY_REF = "refs/heads/reuse-authority"
+GITHUB_API = "https://api.github.com"
+RETAINED_PLAN_KEYS = frozenset({
+    "schemaVersion", "event", "repository", "pullRequest", "baseCommit", "headCommit",
+    "validationCommit", "validationTree", "mergeReady", "remoteBuildAuthorized",
+    "remoteBuildAuthorizationReason", "androidEvidenceRequired", "fullRequested", "full",
+    "unknownPaths", "changedPaths", "lanes",
+})
+_CONTRIBUTION_REQUIRED_KEYS = frozenset({"schemaVersion", "kind", "result", "consumer", "planSha256", "laneReceipts"})
+_CONTRIBUTION_OPTIONAL_KEYS = frozenset({
+    "canonical", "sdkParity", "installedConsumers", "nativeSourceTests", "swiftSourceTests", "reviewedRuntime"})
+_CONTRIBUTIONS_FILE = "current-validation-contributions.json"
+_PLAN_FILE = "impact-plan.json"
+_SOURCE_PLAN_FILE = "source-impact-plan.json"
+_SOURCE_FILE = "source.json"
+_BUNDLE_FILES = frozenset({_SOURCE_PLAN_FILE, _CONTRIBUTIONS_FILE, _SOURCE_FILE})
+_ARTIFACT_LIMITS = {"contributions": 64 << 20, "plan": 16 << 20}
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+_DECIMAL = re.compile(r"[1-9][0-9]{0,19}")
+_OUTPUT_VALUE = re.compile(r"[A-Za-z0-9._-]{1,200}")
+_OUTPUT_KEYS = frozenset({"reused", "kind", "source_run_id", "source_run_attempt", "artifact_name"})
+
+RETAINED_REASONS = frozenset({
+    "not-merge-group", "consumer", "plan", "pull-request", "no-candidate", "run", "fork", "attempt",
+    "workflow", "association", "jobs", "artifact-missing", "artifact-expired", "artifact-identity",
+    "artifact-digest", "artifact-window", "artifact-content", "tree", "plan-hash", "contributions",
+    "bundle", "error",
+})
+
+
+class RetainedReuseRejected(ValueError):
+    """A structured, fail-closed refusal of merge-group retained validation reuse."""
+
+    def __init__(self, reason: str, detail: str):
+        if reason not in RETAINED_REASONS:
+            raise ValueError(f"Unknown retained reuse rejection reason: {reason}")
+        self.reason = reason
+        super().__init__(detail)
+
+
+def route_line(reason: str, detail: str) -> str:
+    """One log line that can carry no workflow command or extra line."""
+    reason = reason if reason in RETAINED_REASONS or reason == "applied" else "error"
+    text = "".join(character if " " <= character <= "~" else "?" for character in str(detail))[:300]
+    return f"[route:merge-queue-reuse:{reason}] {text}"
+
+
+def write_step_outputs(path: Any, values: Mapping[str, Any]) -> None:
+    """Append fixed-name, fixed-alphabet outputs only (no GITHUB_OUTPUT injection)."""
+    lines = []
+    for key, value in values.items():
+        value = str(value).lower() if isinstance(value, bool) else str(value)
+        if key not in _OUTPUT_KEYS or _OUTPUT_VALUE.fullmatch(value) is None:
+            raise ValueError("Retained reuse step output is outside its fixed alphabet")
+        lines.append(f"{key}={value}\n")
+    with open(path, "a", encoding="utf-8") as output:
+        output.write("".join(lines))
+
+
+def retained_contributions_name(tree: str, attempt: int) -> str:
+    return f"codex-agent-current-validation-contributions-{_oid(tree, 'Validation tree')}-attempt-{_positive(attempt, 'Run attempt')}"
+
+
+def _digest(raw: bytes) -> str:
+    import hashlib
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _strict_json(raw: Any, label: str, reason: str = "artifact-content") -> dict[str, Any]:
+    import json
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise RetainedReuseRejected(reason, f"{label} repeats key {key!r}")
+            result[key] = value
+        return result
+
+    def constant(value):
+        raise RetainedReuseRejected(reason, f"{label} carries non-finite number {value}")
+
+    if type(raw) is not bytes:
+        raise RetainedReuseRejected(reason, f"{label} is not exact bytes")
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs, parse_constant=constant)
+    except (UnicodeDecodeError, ValueError) as error:
+        if isinstance(error, RetainedReuseRejected):
+            raise
+        raise RetainedReuseRejected(reason, f"{label} is not strict JSON") from error
+    if not isinstance(value, dict):
+        raise RetainedReuseRejected(reason, f"{label} is not a JSON object")
+    return value
+
+
+def _require_int(value: Any, label: str, reason: str) -> int:
+    if type(value) is not int or value < 1:
+        raise RetainedReuseRejected(reason, f"{label} must be a positive integer")
+    return value
+
+
+def require_retained_plan_pair(current: Mapping[str, Any], source: Mapping[str, Any], *,
+                               repository_root: Any) -> None:
+    """The merge-group plan and its PR source plan name one identical, covered tree."""
+    from pathlib import Path
+    from impact import validate_legacy_lane_projection, validate_remote_build_authorization
+    repository_root = Path(repository_root)
+    for label, plan in (("Current", current), ("Source", source)):
+        if not isinstance(plan, dict) or set(plan) != RETAINED_PLAN_KEYS or type(plan.get("schemaVersion")) is not int \
+                or plan["schemaVersion"] != 1 or plan.get("repository") != REPOSITORY:
+            raise RetainedReuseRejected("plan", f"{label} impact plan schema or repository mismatch")
+        for field in ("baseCommit", "headCommit", "validationCommit", "validationTree"):
+            if not isinstance(plan[field], str) or _OID.fullmatch(plan[field]) is None:
+                raise RetainedReuseRejected("plan", f"{label} impact plan {field} is not an exact object ID")
+        try:
+            authorized = validate_remote_build_authorization(dict(plan))
+            validate_legacy_lane_projection(dict(plan), repository_root=repository_root)
+        except (KeyError, TypeError, ValueError) as error:
+            raise RetainedReuseRejected("plan", f"{label} impact plan is not authoritative: {error}") from error
+        expected = ("merge_group", "merge-group") if label == "Current" else ("pull_request", "pull-request-final")
+        if plan["event"] != expected[0] or plan["mergeReady"] is not True or authorized != (True, expected[1]):
+            raise RetainedReuseRejected("plan", f"{label} impact plan is not an authorized {expected[0]} plan")
+    number = current["pullRequest"]
+    if type(number) is not int or number < 1 or source["pullRequest"] != number or type(source["pullRequest"]) is not int:
+        raise RetainedReuseRejected("plan", "Source impact plan names another pull request")
+    if source["validationTree"] != current["validationTree"]:
+        raise RetainedReuseRejected("tree", "Source PR validation tree differs from the merge-group tree")
+    if current["androidEvidenceRequired"] is True and source["androidEvidenceRequired"] is not True:
+        raise RetainedReuseRejected("plan", "Source PR validation lacks required Android evidence")
+    lanes, source_lanes = current["lanes"], source["lanes"]
+    if not isinstance(lanes, dict) or not isinstance(source_lanes, dict) or set(lanes) != set(source_lanes):
+        raise RetainedReuseRejected("plan", "Source PR validation lane set differs")
+    for lane, state in lanes.items():
+        if any(state.get(action) is True and source_lanes[lane].get(action) is not True
+               for action in ("build", "test", "metadata")):
+            raise RetainedReuseRejected("plan", f"Source PR validation does not cover merge-group work: {lane}")
+
+
+def require_retained_contributions(contributions: Mapping[str, Any], *, source_plan_raw: bytes,
+                                   source_plan: Mapping[str, Any], run_id: int, run_attempt: int) -> None:
+    """The contributions are the passed retained gate of exactly this PR attempt and plan."""
+    keys = set(contributions) if isinstance(contributions, dict) else set()
+    if not _CONTRIBUTION_REQUIRED_KEYS <= keys or not keys <= _CONTRIBUTION_REQUIRED_KEYS | _CONTRIBUTION_OPTIONAL_KEYS:
+        raise RetainedReuseRejected("contributions", "Retained contributions have an unexpected key set")
+    if (type(contributions["schemaVersion"]) is not int or contributions["schemaVersion"] != 1
+            or contributions["kind"] != "current-validation-contributions" or contributions["result"] != "passed"):
+        raise RetainedReuseRejected("contributions", "Retained contributions are not a passed schema-1 gate")
+    if contributions["planSha256"] != _digest(source_plan_raw):
+        raise RetainedReuseRejected("plan-hash", "Retained contributions bind another impact plan")
+    expected = {
+        "repository": REPOSITORY, "workflowPath": CI_WORKFLOW, "event": "pull_request",
+        "runId": run_id, "runAttempt": run_attempt, "pullRequest": source_plan["pullRequest"],
+        "commit": source_plan["validationCommit"], "tree": source_plan["validationTree"],
+    }
+    consumer = contributions["consumer"]
+    if (not isinstance(consumer, dict) or consumer != expected
+            or any(type(consumer[field]) is not int for field in ("runId", "runAttempt", "pullRequest"))):
+        raise RetainedReuseRejected("contributions", "Retained contributions name another consumer identity")
+    receipts = contributions["laneReceipts"]
+    if (not isinstance(receipts, dict) or any(type(lane) is not str or not isinstance(value, str)
+                                              or _DIGEST.fullmatch(value) is None for lane, value in receipts.items())):
+        raise RetainedReuseRejected("contributions", "Retained contributions lane receipts are malformed")
+
+
+def _require_window(job: Mapping[str, Any], artifact: Mapping[str, Any]) -> None:
+    try:
+        started, created, completed = (_timestamp(value, label) for value, label in (
+            (job.get("started_at"), "Gate start"), (artifact.get("created_at"), "Artifact"),
+            (job.get("completed_at"), "Gate completion")))
+    except ScopeRejected as error:
+        raise RetainedReuseRejected("artifact-window", str(error)) from error
+    if not started <= created <= completed:
+        raise RetainedReuseRejected("artifact-window", "Retained contributions were not uploaded by the final merge gate")
+
+
+def _gate_jobs(jobs: Any, run: Mapping[str, Any], attempt: int) -> dict[str, Mapping[str, Any]]:
+    if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
+        raise RetainedReuseRejected("jobs", "Source run jobs are malformed")
+    selected = {}
+    for name in (RETAINED_GATE_JOB, RETAINED_OUTER_GATE_JOB):
+        matches = [job for job in jobs if job.get("name") == name]
+        if len(matches) != 1:
+            raise RetainedReuseRejected("jobs", f"Source gate {name} is missing or ambiguous")
+        job = matches[0]
+        if (type(job.get("id")) is not int or job.get("run_id") != run["id"] or job.get("run_attempt") != attempt
+                or job.get("head_sha") != run["head_sha"]
+                or job.get("status") != "completed" or job.get("conclusion") != "success"):
+            raise RetainedReuseRejected("jobs", f"Source gate {name} did not succeed in the final attempt")
+        selected[name] = job
+    return selected
+
+
+def _run_artifact(api: Any, run: Mapping[str, Any], name: str, limit: int) -> dict[str, Any]:
+    from urllib.parse import urlencode
+    items = api.items(f"actions/runs/{run['id']}/artifacts?{urlencode({'name': name})}", "artifacts")
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise RetainedReuseRejected("artifact-missing", "Source run artifacts are malformed")
+    matches = [item for item in items if item.get("name") == name]
+    if not matches:
+        raise RetainedReuseRejected("artifact-missing", f"Source run lacks {name}")
+    if len(matches) != 1:
+        raise RetainedReuseRejected("artifact-identity", f"Source run has ambiguous {name}")
+    artifact = matches[0]
+    if artifact.get("expired") is not False:
+        raise RetainedReuseRejected("artifact-expired", f"{name} is expired or lacks expiry state")
+    artifact_id = _require_int(artifact.get("id"), "Source artifact ID", "artifact-identity")
+    transport = artifact.get("workflow_run")
+    if (not isinstance(transport, dict) or transport.get("id") != run["id"]
+            or transport.get("head_sha") != run["head_sha"]
+            or transport.get("repository_id") is None
+            or transport.get("head_repository_id") != transport.get("repository_id")):
+        raise RetainedReuseRejected("artifact-identity", f"{name} belongs to another run or repository")
+    if artifact.get("archive_download_url") != f"{GITHUB_API}/repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip":
+        raise RetainedReuseRejected("artifact-identity", f"{name} has an unexpected transport URL")
+    if not isinstance(artifact.get("digest"), str) or _DIGEST.fullmatch(artifact["digest"]) is None:
+        raise RetainedReuseRejected("artifact-digest", f"{name} lacks an exact digest")
+    size = artifact.get("size_in_bytes")
+    if type(size) is not int or not 0 < size <= limit:
+        raise RetainedReuseRejected("artifact-content", f"{name} size is outside its fixed bound")
+    return artifact
+
+
+def _single_file(api: Any, artifact: Mapping[str, Any], filename: str, limit: int, work: Any) -> bytes:
+    """Download the exact digest and extract exactly one regular root file."""
+    from pathlib import Path
+    from receipt import safe_extract
+    work = Path(work)
+    archive, extracted = work / f"{artifact['id']}.zip", work / str(artifact["id"])
+    try:
+        api.download(artifact, archive, limit)
+    except (OSError, ValueError) as error:
+        raise RetainedReuseRejected("artifact-digest", f"{artifact['name']} transport failed its digest: {error}") from error
+    raw = archive.read_bytes()
+    if _digest(raw) != artifact["digest"] or len(raw) != artifact["size_in_bytes"]:
+        raise RetainedReuseRejected("artifact-digest", f"{artifact['name']} differs from its API digest")
+    try:
+        safe_extract(archive, extracted)
+    except (OSError, ValueError) as error:
+        raise RetainedReuseRejected("artifact-content", f"{artifact['name']} is not a safe archive") from error
+    entries = list(extracted.iterdir())
+    if (len(entries) != 1 or entries[0].name != filename or entries[0].is_symlink() or not entries[0].is_file()):
+        raise RetainedReuseRejected("artifact-content", f"{artifact['name']} must hold exactly {filename}")
+    return entries[0].read_bytes()
+
+
+def _require_reference(run: Mapping[str, Any], trusted_workflow_sha: str) -> None:
+    references = run.get("referenced_workflows")
+    if not isinstance(references, list):
+        raise RetainedReuseRejected("workflow", "Source run lacks its workflow references")
+    selected = [value for value in references if isinstance(value, dict)
+                and value.get("path") == PRODUCT_VALIDATION_REFERENCE]
+    if (len(selected) != 1 or selected[0].get("ref") != REUSE_AUTHORITY_REF
+            or selected[0].get("sha") != trusted_workflow_sha):
+        raise RetainedReuseRejected("workflow", "Source run did not use the current reviewed product workflow")
+
+
+def observe_retained_pr_validation(current: Mapping[str, Any], run: Any, pull: Mapping[str, Any], *, api: Any,
+                                   repository_root: Any, trusted_workflow_sha: str, work: Any) -> dict[str, Any]:
+    """Verify one candidate PR run online; return the exact bundle it proves."""
+    if not isinstance(run, dict) or type(run.get("id")) is not int or run["id"] < 1:
+        raise RetainedReuseRejected("run", "Source run is malformed")
+    if (run.get("path") != CI_WORKFLOW or run.get("event") != "pull_request"
+            or run.get("status") != "completed" or run.get("conclusion") != "success"):
+        raise RetainedReuseRejected("run", "Source is not a completed successful ci.yml pull_request run")
+    try:
+        require_same_repository_run(run)
+    except ScopeRejected as error:
+        raise RetainedReuseRejected("fork" if error.reason == "fork" else "run", str(error)) from error
+    attempt = _require_int(run.get("run_attempt"), "Source final attempt", "attempt")
+    head = run.get("head_sha")
+    if not isinstance(head, str) or _OID.fullmatch(head) is None or head != pull["head"]["sha"]:
+        raise RetainedReuseRejected("run", "Source run did not test the pull request's current head")
+    number = current["pullRequest"]
+    if len([item for item in run.get("pull_requests") or () if isinstance(item, dict)
+            and item.get("number") == number]) != 1:
+        raise RetainedReuseRejected("association", "Source run lacks one live association with the pull request")
+    _require_reference(run, trusted_workflow_sha)
+    tree = current["validationTree"]
+    contributions_artifact = _run_artifact(api, run, retained_contributions_name(tree, attempt),
+                                           _ARTIFACT_LIMITS["contributions"])
+    plan_artifact = _run_artifact(api, run, f"codex-agent-ci-plan-control-{tree}", _ARTIFACT_LIMITS["plan"])
+    jobs = _gate_jobs(api.items(f"actions/runs/{run['id']}/attempts/{attempt}/jobs", "jobs"), run, attempt)
+    _require_window(jobs[RETAINED_GATE_JOB], contributions_artifact)
+    source_raw = _single_file(api, plan_artifact, _PLAN_FILE, _ARTIFACT_LIMITS["plan"], work)
+    contributions_raw = _single_file(api, contributions_artifact, _CONTRIBUTIONS_FILE,
+                                     _ARTIFACT_LIMITS["contributions"], work)
+    source = _strict_json(source_raw, "Source impact plan")
+    require_retained_plan_pair(current, source, repository_root=repository_root)
+    if source["headCommit"] != head:
+        raise RetainedReuseRejected("run", "Source impact plan names another PR head")
+    tested = api.json(f"git/commits/{source['validationCommit']}")
+    parents = tested.get("parents") if isinstance(tested, dict) else None
+    if (not isinstance(tested, dict) or tested.get("sha") != source["validationCommit"]
+            or not isinstance(tested.get("tree"), dict) or tested["tree"].get("sha") != tree):
+        raise RetainedReuseRejected("tree", "Source tested commit does not carry the merge-group tree")
+    if not isinstance(parents, list) or [_sha(value, "parent") for value in parents] != [source["baseCommit"], head]:
+        raise RetainedReuseRejected("association", "Source tested commit does not merge its PR head")
+    try:
+        binding = pull_request_binding(run, tested, expected_commit=source["validationCommit"],
+                                       pull_request=number, fetch=api.json)
+    except (ScopeRejected, ValueError) as error:
+        raise RetainedReuseRejected("association", f"Source run is not bound to the pull request: {error}") from error
+    if binding.get("number") != number or binding.get("head") != head:
+        raise RetainedReuseRejected("association", "Source run binds another pull-request head")
+    contributions = _strict_json(contributions_raw, "Retained contributions")
+    require_retained_contributions(contributions, source_plan_raw=source_raw, source_plan=source,
+                                   run_id=run["id"], run_attempt=attempt)
+    pointer = {
+        "schemaVersion": 1, "kind": RETAINED_SOURCE_KIND, "repository": REPOSITORY, "pullRequest": number,
+        "runId": run["id"], "runAttempt": attempt, "headSha": head, "trustedWorkflowSha": trusted_workflow_sha,
+        "validationCommit": source["validationCommit"], "validationTree": tree,
+        "gateJobId": jobs[RETAINED_GATE_JOB]["id"], "outerGateJobId": jobs[RETAINED_OUTER_GATE_JOB]["id"],
+        "contributions": {"artifactId": contributions_artifact["id"], "artifactName": contributions_artifact["name"],
+                          "artifactDigest": contributions_artifact["digest"], "sha256": _digest(contributions_raw)},
+        "plan": {"artifactId": plan_artifact["id"], "artifactName": plan_artifact["name"],
+                 "artifactDigest": plan_artifact["digest"], "sha256": _digest(source_raw)},
+    }
+    return {_SOURCE_PLAN_FILE: source_raw, _CONTRIBUTIONS_FILE: contributions_raw, "pointer": pointer}
+
+
+def verify_retained_bundle(root: Any, current_plan: Any, *, repository_root: Any, environ: Mapping[str, str],
+                           trusted_workflow_sha: str, source_run_id: int | None = None,
+                           source_run_attempt: int | None = None) -> dict[str, Any]:
+    """Offline re-verification of a staged bundle against the current plan and runner."""
+    from pathlib import Path
+    root, current_plan = Path(root), Path(current_plan)
+    if root.is_symlink() or not root.is_dir():
+        raise RetainedReuseRejected("bundle", "Retained validation bundle root is unsafe")
+    entries = list(root.iterdir())
+    if ({entry.name for entry in entries} != _BUNDLE_FILES
+            or any(entry.is_symlink() or not entry.is_file() for entry in entries)):
+        raise RetainedReuseRejected("bundle", "Retained validation bundle has an unexpected file set")
+    if current_plan.is_symlink() or not current_plan.is_file():
+        raise RetainedReuseRejected("bundle", "Current impact plan is unsafe")
+    current = _strict_json(current_plan.read_bytes(), "Current impact plan", "bundle")
+    try:
+        require_consumer_environment(environ, current)
+    except ScopeRejected as error:
+        raise RetainedReuseRejected("consumer", str(error)) from error
+    raw = {name: (root / name).read_bytes() for name in _BUNDLE_FILES}
+    pointer = _strict_json(raw[_SOURCE_FILE], "Retained validation source", "bundle")
+    if set(pointer) != {"schemaVersion", "kind", "repository", "pullRequest", "runId", "runAttempt", "headSha",
+                        "trustedWorkflowSha", "validationCommit", "validationTree", "gateJobId", "outerGateJobId",
+                        "contributions", "plan"}:
+        raise RetainedReuseRejected("bundle", "Retained validation source has an unexpected key set")
+    run_id = _require_int(pointer["runId"], "Source run ID", "bundle")
+    attempt = _require_int(pointer["runAttempt"], "Source run attempt", "bundle")
+    if (pointer["schemaVersion"] != 1 or type(pointer["schemaVersion"]) is not int
+            or pointer["kind"] != RETAINED_SOURCE_KIND or pointer["repository"] != REPOSITORY
+            or pointer["pullRequest"] != current["pullRequest"] or type(pointer["pullRequest"]) is not int
+            or pointer["validationTree"] != current["validationTree"]
+            or pointer["trustedWorkflowSha"] != trusted_workflow_sha
+            or source_run_id is not None and run_id != source_run_id
+            or source_run_attempt is not None and attempt != source_run_attempt):
+        raise RetainedReuseRejected("bundle", "Retained validation source differs from this merge group")
+    _require_int(pointer["gateJobId"], "Gate job ID", "bundle")
+    _require_int(pointer["outerGateJobId"], "Outer gate job ID", "bundle")
+    for field, filename, name in (
+            ("contributions", _CONTRIBUTIONS_FILE, retained_contributions_name(current["validationTree"], attempt)),
+            ("plan", _SOURCE_PLAN_FILE, f"codex-agent-ci-plan-control-{current['validationTree']}")):
+        row = pointer[field]
+        if (not isinstance(row, dict) or set(row) != {"artifactId", "artifactName", "artifactDigest", "sha256"}
+                or type(row["artifactId"]) is not int or row["artifactId"] < 1 or row["artifactName"] != name
+                or not isinstance(row["artifactDigest"], str) or _DIGEST.fullmatch(row["artifactDigest"]) is None
+                or row["sha256"] != _digest(raw[filename])):
+            raise RetainedReuseRejected("bundle", f"Retained validation {field} pointer differs from its bytes")
+    source = _strict_json(raw[_SOURCE_PLAN_FILE], "Source impact plan")
+    require_retained_plan_pair(current, source, repository_root=repository_root)
+    if source["headCommit"] != pointer["headSha"] or source["validationCommit"] != pointer["validationCommit"]:
+        raise RetainedReuseRejected("bundle", "Retained validation source names another PR commit")
+    require_retained_contributions(_strict_json(raw[_CONTRIBUTIONS_FILE], "Retained contributions"),
+                                   source_plan_raw=raw[_SOURCE_PLAN_FILE], source_plan=source,
+                                   run_id=run_id, run_attempt=attempt)
+    return pointer
+
+
+def _write_bundle(destination: Any, bundle: Mapping[str, Any]) -> None:
+    import json
+    import shutil
+    import tempfile
+    from pathlib import Path
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise RetainedReuseRejected("bundle", "Retained validation destination must be fresh")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staged = Path(tempfile.mkdtemp(prefix=".retained-", dir=destination.parent))
+    try:
+        (staged / _SOURCE_PLAN_FILE).write_bytes(bundle[_SOURCE_PLAN_FILE])
+        (staged / _CONTRIBUTIONS_FILE).write_bytes(bundle[_CONTRIBUTIONS_FILE])
+        (staged / _SOURCE_FILE).write_text(json.dumps(bundle["pointer"], indent=2, sort_keys=True) + "\n",
+                                           encoding="utf-8")
+        staged.rename(destination)
+    except BaseException:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+
+
+class GitHubReads:
+    """Fixed read-only GETs on the canonical repository (never another origin)."""
+
+    def __init__(self, token: str, api_url: str = GITHUB_API):
+        if api_url != GITHUB_API or not isinstance(token, str) or not token:
+            raise RetainedReuseRejected("consumer", "Retained reuse reads only the canonical GitHub API")
+        self._token = token
+
+    def json(self, path: str) -> Any:
+        from reuse import api_json
+        return api_json(f"{GITHUB_API}/repos/{REPOSITORY}/{path}", self._token)
+
+    def items(self, path: str, key: str) -> list[Any]:
+        from reuse import paginated_items
+        return paginated_items(f"{GITHUB_API}/repos/{REPOSITORY}/{path}", key, self._token)
+
+    def download(self, artifact: Mapping[str, Any], destination: Any, max_bytes: int) -> None:
+        from reuse import download_artifact_to_file
+        download_artifact_to_file(dict(artifact), self._token, destination, max_bytes=max_bytes)
+
+
+def discover_retained_pr_validation(plan_path: Any, destination: Any, *, environ: Mapping[str, str],
+                                    repository_root: Any, trusted_workflow_sha: Any = None, api: Any = None,
+                                    source_run_id: int | None = None,
+                                    log: Callable[[str], None] = print) -> dict[str, str]:
+    """Merge-group plan step: reuse a verified retained PR validation or fail closed.
+
+    Returns step outputs. Every exception (or mismatch) yields ``reused=false``
+    and one ``[route:merge-queue-reuse:<reason>]`` line; nothing is staged then.
+    """
+    import shutil
+    import tempfile
+    from pathlib import Path
+    destination = Path(destination)
+    try:
+        if environ.get("GITHUB_EVENT_NAME") != "merge_group":
+            raise RetainedReuseRejected("not-merge-group", "Retained PR validation reuse is merge-group only")
+        if not isinstance(trusted_workflow_sha, str) or _OID.fullmatch(trusted_workflow_sha) is None:
+            raise RetainedReuseRejected("workflow", "Current reviewed product workflow SHA is not exact")
+        path = Path(plan_path)
+        if path.is_symlink() or not path.is_file():
+            raise RetainedReuseRejected("plan", "Current impact plan is unsafe")
+        current = _strict_json(path.read_bytes(), "Current impact plan", "plan")
+        try:
+            require_consumer_environment(environ, current)
+        except ScopeRejected as error:
+            raise RetainedReuseRejected("consumer", str(error)) from error
+        if api is None:
+            api = GitHubReads(environ.get("GITHUB_TOKEN", ""), environ.get("GITHUB_API_URL", GITHUB_API))
+        number = current["pullRequest"]
+        if type(number) is not int or number < 1:
+            raise RetainedReuseRejected("plan", "Current impact plan lacks its pull request")
+        pull = api.json(f"pulls/{number}")
+        try:
+            _require_same_repository_pull(pull, number, REPOSITORY, "Pull request")
+        except ScopeRejected as error:
+            raise RetainedReuseRejected("fork" if error.reason == "fork" else "pull-request", str(error)) from error
+        if pull.get("state") != "open" or pull.get("merged") is not False:
+            raise RetainedReuseRejected("pull-request", "Merge-group pull request is not open")
+        head = pull["head"]["sha"]
+        if source_run_id is not None:
+            candidates = [_require_int(source_run_id, "Requested source run", "run")]
+        else:
+            runs = api.items(f"actions/workflows/ci.yml/runs?event=pull_request&status=completed&head_sha={head}",
+                             "workflow_runs")
+            if not isinstance(runs, list) or any(not isinstance(run, dict) for run in runs):
+                raise RetainedReuseRejected("run", "Workflow run listing is malformed")
+            candidates = sorted({run["id"] for run in runs if type(run.get("id")) is int and run["id"] > 0
+                                 and run.get("conclusion") == "success" and run.get("head_sha") == head}, reverse=True)
+        if not candidates:
+            raise RetainedReuseRejected("no-candidate", f"No green ci.yml pull_request run tested PR head {head}")
+        failure = None
+        for run_id in candidates:
+            with tempfile.TemporaryDirectory(prefix="retained-reuse-") as work:
+                try:
+                    # The run endpoint (not an attempt) reports the final attempt only.
+                    run = api.json(f"actions/runs/{run_id}")
+                    if not isinstance(run, dict) or run.get("id") != run_id:
+                        raise RetainedReuseRejected("run", "Source run response names another run")
+                    bundle = observe_retained_pr_validation(current, run, pull, api=api,
+                        repository_root=repository_root, trusted_workflow_sha=trusted_workflow_sha, work=work)
+                except RetainedReuseRejected as error:
+                    failure = error
+                    log(route_line(error.reason, f"run {run_id}: {error}"))
+                    continue
+            _write_bundle(destination, bundle)
+            try:
+                pointer = verify_retained_bundle(destination, path, repository_root=repository_root,
+                    environ=environ, trusted_workflow_sha=trusted_workflow_sha,
+                    source_run_id=run_id, source_run_attempt=bundle["pointer"]["runAttempt"])
+            except BaseException:
+                shutil.rmtree(destination, ignore_errors=True)
+                raise
+            outputs = {"reused": "true", "kind": RETAINED_KIND, "source_run_id": str(pointer["runId"]),
+                       "source_run_attempt": str(pointer["runAttempt"]),
+                       "artifact_name": pointer["contributions"]["artifactName"]}
+            log(route_line("applied", f"run {pointer['runId']} attempt {pointer['runAttempt']} "
+                                      f"{pointer['contributions']['artifactName']}"))
+            return outputs
+        raise failure
+    except Exception as error:  # Fail closed: any doubt keeps the full merge-group path.
+        reason = error.reason if isinstance(error, RetainedReuseRejected) else "error"
+        log(route_line(reason, f"reused=false: {type(error).__name__}: {error}"))
+        return {"reused": "false"}
+
+
+def stage_merge_group_retained_validation(bundle: Any, current_plan: Any, destination: Any, *,
+                                          repository_root: Any, environ: Mapping[str, str],
+                                          trusted_workflow_sha: str, source_run_id: int,
+                                          source_run_attempt: int) -> dict[str, Any]:
+    """Merge gate: re-verify the plan-job bundle offline and stage its distinct artifact."""
+    import shutil
+    from pathlib import Path
+    if environ.get("GITHUB_EVENT_NAME") != "merge_group":
+        raise RetainedReuseRejected("not-merge-group", "Retained PR validation reuse is merge-group only")
+    pointer = verify_retained_bundle(bundle, current_plan, repository_root=repository_root, environ=environ,
+        trusted_workflow_sha=trusted_workflow_sha, source_run_id=source_run_id,
+        source_run_attempt=source_run_attempt)
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise RetainedReuseRejected("bundle", "Merge-group retained validation destination must be fresh")
+    destination.mkdir(parents=True)
+    for name in sorted(_BUNDLE_FILES):
+        shutil.copyfile(Path(bundle) / name, destination / name)
+    shutil.copyfile(current_plan, destination / _PLAN_FILE)
+    return pointer
+
+
+def main(argv: Iterable[str] | None = None) -> int:
+    """Read-only dry run: ``merge-group-retained-dry-run --plan P --destination D --source-run-id N``."""
+    import argparse
+    import os
+    import sys
+    from pathlib import Path
+    parser = argparse.ArgumentParser(description=main.__doc__, allow_abbrev=False)
+    parser.add_argument("mode", choices=("merge-group-retained-dry-run",))
+    parser.add_argument("--plan", type=Path, required=True)
+    parser.add_argument("--destination", type=Path, required=True)
+    parser.add_argument("--trusted-workflow-sha", required=True)
+    parser.add_argument("--source-run-id", type=int)
+    parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    arguments = parser.parse_args(None if argv is None else list(argv))
+    outputs = discover_retained_pr_validation(arguments.plan, arguments.destination, environ=os.environ,
+        repository_root=arguments.repository_root, trusted_workflow_sha=arguments.trusted_workflow_sha,
+        source_run_id=arguments.source_run_id, log=lambda line: print(line, file=sys.stderr))
+    for key, value in outputs.items():
+        print(f"{key}={value}")
+    return 0 if outputs.get("reused") == "true" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

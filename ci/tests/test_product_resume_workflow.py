@@ -508,7 +508,8 @@ class ProductResumeWorkflowTest(unittest.TestCase):
                           [{'name': name, 'expired': False}], OSError('offline')):
             with self.subTest(artifacts=artifacts), tempfile.TemporaryDirectory() as scratch:
                 output = Path(scratch) / 'output'
-                with mock.patch.dict(os.environ, GITHUB_API_URL='https://api.invalid', GITHUB_TOKEN='test', GITHUB_OUTPUT=str(output)), \
+                with mock.patch.dict(os.environ, GITHUB_API_URL='https://api.invalid', GITHUB_TOKEN='test', GITHUB_OUTPUT=str(output),
+                                     GITHUB_EVENT_NAME='pull_request'), \
                         mock.patch('pathlib.Path.read_text', return_value='{"repository":"owner/repo","validationTree":"' + 'a' * 40 + '"}'), \
                         mock.patch('reuse.paginated_items', **({'side_effect': artifacts} if isinstance(artifacts, Exception) else {'return_value': artifacts})) as listing, \
                         mock.patch('subprocess.run') as discover:

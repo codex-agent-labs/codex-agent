@@ -878,7 +878,7 @@ class SdkCompletionWorkflowTest(unittest.TestCase):
         gate = self.job('merge-gate')
         for marker in ('name: Require an exact receipt set', 'name: Stage the exact reusable validation artifact'):
             block = gate.split('      - ' + marker + '\n', 1)[1].split('\n      - ', 1)[0]
-            self.assertIn("if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' }}", block)
+            self.assertIn("if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && needs.plan.outputs.validation_reuse_kind != 'retained' }}", block)
         block = gate.split('      - name: Authenticate current-head acceptance without restoring product bodies\n', 1)[1].split('\n      - ', 1)[0]
         self.assertIn('if: inputs.fullReuseAcceptanceOnly\n', block)
         for name in ('FULL_REUSE_ACCEPTANCE_ONLY', 'RUNTIME_RECOVERY_ONLY', 'SDK_RECOVERY_ONLY',
@@ -1079,7 +1079,7 @@ class RetainedAndroidParentWorkflowTest(unittest.TestCase):
         self.assertIn('codex-agent-sdk-validation-contributions-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}', upload)
         gate = self.parent.split('  merge-gate:\n',1)[1]
         for name in ('Require an exact receipt set', 'Stage the exact reusable validation artifact'):
-            self.assertIn(name+"\n        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' }}", gate)
+            self.assertIn(name+"\n        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && needs.plan.outputs.validation_reuse_kind != 'retained' }}", gate)
         self.assertIn("aggregate_retained_validation(plan, Path('build/ci/receipts')", gate)
         self.assertIn("canonical = any(os.environ[key] == 'true' for key in ('RETAINED_ANDROID', 'RETAINED_NODE_JS', 'RETAINED_CONSUMERS'))", gate)
         for field, expression in (("artifact_id", "int(os.environ['ARTIFACT_ID'])"),
