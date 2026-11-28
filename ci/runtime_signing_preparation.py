@@ -70,7 +70,7 @@ def recover_original_aggregate_release(plan_path: Path, selected: Path, selectio
                                        destination: Path, *, keyring: Path, keys_directory: Path,
                                        repository_root: Path, environment: Mapping[str, str],
                                        trusted_workflow_sha: str, token: str,
-                                       scratch: Path | None = None) -> Path | None:
+                                       scratch: Path | None = None, completed_frozen=None) -> Path | None:
     """Forward the exact earlier signed carrier of a retained aggregate, never a new signature.
 
     Completed-frozen discovery restores retained aggregate metadata without
@@ -79,6 +79,9 @@ def recover_original_aggregate_release(plan_path: Path, selected: Path, selectio
     original producer; that run's protected upload is captured with its
     original CI/job/name/digest gates and staged through the full signature
     check. The signer later re-verifies the carrier against selected originals.
+    A completed-frozen caller passes its native capability: the capture gate
+    then admits the owner-pinned (T4c) PR-31 producer of the exact selected
+    receipt for the consumer scope that capability admits.
     """
     from product_reuse import (
         _runtime_prior_workflow_sha, api_json, capture_runtime_aggregate_release_upload, paginated_items,
@@ -136,7 +139,9 @@ def recover_original_aggregate_release(plan_path: Path, selected: Path, selectio
         capture_runtime_aggregate_release_upload(plan_path, capture, artifact_id=matches[0].get("id"),
             artifact_sha256=matches[0].get("digest"), trusted_workflow_sha=workflow,
             expected_build_key=key, expected_metadata_receipt_sha256=digest, original_producer=original,
-            repository_root=repository_root, environ=environment, token=token)
+            repository_root=repository_root, environ=environment, token=token,
+            **({} if completed_frozen is None else {"completed_frozen": completed_frozen,
+                                                    "original_receipt": receipt}))
         records = stage_runtime_aggregate_release_evidence(
             [{"receiptSha256": digest, "handoffRoot": "original"}],
             capture, staged, keyring=keyring, keys_directory=keys_directory)
@@ -258,7 +263,7 @@ def prepare_runtime_signing_inputs(
                 retained = recovered = recover_original_aggregate_release(captured_plan, selected, selection,
                     root / "retained-original", keyring=trust.keyring, keys_directory=trust.keys,
                     repository_root=candidate, environment=environment,
-                    trusted_workflow_sha=trusted_workflow_sha, token=token)
+                    trusted_workflow_sha=trusted_workflow_sha, token=token, **semantic)
                 unchanged()
             if retained is not None:
                 retained = Path(retained)

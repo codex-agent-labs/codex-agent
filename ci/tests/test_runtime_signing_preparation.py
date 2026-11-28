@@ -203,6 +203,13 @@ class RuntimeSigningPreparationTest(unittest.TestCase):
         for reader in (self.capture, self.selector, self.aggregate):
             self.assertIs(capability, reader.call_args.kwargs['completed_frozen'])
 
+    def test_private_native_capability_reaches_original_aggregate_recovery(self):
+        self.retained = False
+        capability = object()  # Composition seam; the capture gate rejects forged authority.
+        recover = self.mock("recover_original_aggregate_release", return_value=None)
+        self.invoke(target="aggregate", completed_frozen=capability)
+        self.assertIs(capability, recover.call_args.kwargs["completed_frozen"])
+
     def test_apple_policy_native_and_aggregate_replay_receive_copy_never_serialized_authority(self):
         original = deepcopy(self.apple_policy)
         raw = canonical_json_bytes(original)

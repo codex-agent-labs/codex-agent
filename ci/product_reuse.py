@@ -9166,11 +9166,20 @@ def capture_runtime_resume_upload(
 def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact_id, artifact_sha256,
         trusted_workflow_sha, expected_build_key, expected_metadata_receipt_sha256,
         repository_root=None, environ=None, original_run_id=None, original_run_attempt=None,
-        original_producer=None, token, expected_plan_revision=None):
+        original_producer=None, token, expected_plan_revision=None, completed_frozen=None,
+        original_receipt=None):
     """Capture a fixed protected job's exact upload, not its product admission.
 
     Original signature/content authentication remains in the existing full
     carrier/SDK gate. Nothing in current transport rewrites original provenance.
+
+    T4 scope: a retained ``original_producer`` is the consumer's own PR scope
+    (same event and PR), or the producer of an owner-pinned (T4c) PR-31
+    aggregate metadata receipt: ``original_receipt`` is the selected receipt
+    (exact selected digest and key, produced by ``original_producer``) and the
+    caller's native ``completed_frozen`` capability pins it (pins_receipt), for
+    a consumer that capability admits and a plan carrying that admitted scope.
+    Repository and earlier-run ordering stay exact.
     """
     from products.sdk_package import _require_capability_output_separate
     from products.sdk_protected_runtime import _original_carrier
@@ -9206,10 +9215,31 @@ def capture_runtime_aggregate_release_upload(plan_path, destination, *, artifact
             original_run_id=original_run_id, original_run_attempt=original_run_attempt,
         )["producer"])
         producer = current if original_producer is None else validate_producer(original_producer)
+        owner_pinned = False
+        if original_producer is not None and completed_frozen is not None:
+            from reuse_qualification import CompletedFrozenReuse
+            owner_pinned = (type(completed_frozen) is CompletedFrozenReuse
+                            and isinstance(original_receipt, dict)
+                            and sha256_bytes(canonical_json_bytes(original_receipt)) == digest
+                            and original_receipt.get("buildKey") == key
+                            and original_receipt.get("producer") == producer
+                            and _identity(original_receipt) == PhaseInstanceId(
+                                "runtime", "runtime-aggregate", "metadata", "aggregate")
+                            and producer["event"] == "pull_request"
+                            and producer["pullRequest"] == producer_scope.PINNED_PULL_REQUEST
+                            and current["event"] in producer_scope.CONSUMER_EVENTS
+                            and completed_frozen.pins_receipt(original_receipt))
+        if owner_pinned:
+            # The consumer and its plan are the capability's admitted scope N (PR N
+            # or merge-queue pr-N); any disagreement raises QualificationIncompatible.
+            completed_frozen.check_consumer({"kind": "ci", "producer": current})
+            if plan.get("pullRequest") != completed_frozen.admitted_pull_request():
+                raise ValueError("Pinned aggregate consumer plan differs from its admitted scope [scope:consumer]")
         if original_producer is not None and (
                 original_run_id is not None or original_run_attempt is not None
-                or producer["repository"] != current["repository"] or producer["event"] != current["event"]
-                or producer["pullRequest"] != current["pullRequest"]
+                or producer["repository"] != current["repository"]
+                or not owner_pinned and (producer["event"] != current["event"]
+                                         or producer["pullRequest"] != current["pullRequest"])
                 or (producer["runId"], producer["runAttempt"]) >= (current["runId"], current["runAttempt"])):
             raise ValueError("Retained aggregate requires the exact earlier original producer of this plan's PR")
         job = "product-validation / runtime-aggregate-attestation"
