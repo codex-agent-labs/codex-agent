@@ -2359,7 +2359,8 @@ def _capture_completed_runtime_controls(plan, producer, destination, artifact_ro
         receipt = source["receipt"]
         instance = _identity(receipt)
         artifact, _, observed, workflow = _authenticate_runtime_original_reference_source(
-            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token)
+            plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token,
+            pinned=completed_frozen)
         name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
         jobs = _matching_ci_jobs(observed[0]["jobs"], name)
         if len(jobs) != 1:
@@ -8105,7 +8106,8 @@ def _initial_runtime_upload_source(producer, artifact_id, token):
 
 @measured
 def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destination, *,
-                                       trusted_workflow_sha, token, wanted, inventory_only=None, _targets=None):
+                                       trusted_workflow_sha, token, wanted, inventory_only=None, _targets=None,
+                                       pinned=None):
     """Resolve qualified bytes, not enclosing carriers, after fresh source auth.
 
     The top-level reference envelope has passed its complete upload SHA gate.
@@ -8242,7 +8244,7 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
                 if source["relativePath"] in remote:
                     resolved.append(_capture_runtime_original_reference_members(plan, producer, source,
                         remote[source["relativePath"]], destination,
-                        trusted_workflow_sha=trusted_workflow_sha, token=token))
+                        trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=pinned))
             child = {"originalReferenceSources": resolved}
         elif "runtime-references.json" in names:
             entry = archive.getinfo("runtime-references.json")
@@ -8295,7 +8297,7 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
                 child_targets = {path: tuple(paths) for path, paths in child_targets.items()}
                 child = _capture_runtime_reference_members(plan, plan_bytes, producer,
                     references["base"], destination, trusted_workflow_sha=trusted_workflow_sha,
-                    token=token, wanted=inherited, _targets=child_targets)
+                    token=token, wanted=inherited, _targets=child_targets, pinned=pinned)
         elif base.get("referenceControlSha256") is not None:
             raise ValueError("Original Runtime reference source lacks its authenticated control")
         for path, record in wanted.items():
@@ -8321,12 +8323,32 @@ def _capture_runtime_reference_members(plan, plan_bytes, producer, base, destina
 
 @verification_scoped
 def _authenticate_runtime_original_reference_source(plan, producer, source, *,
-                                                     trusted_workflow_sha, token):
-    """Fresh GitHub identity gates, independent of body storage or qualification."""
+                                                     trusted_workflow_sha, token, pinned=None):
+    """Fresh GitHub identity gates, independent of body storage or qualification.
+
+    T4 scope: the original is the consumer's own PR scope (same event and PR),
+    or an owner-pinned (T4c) PR-31 original that ``pinned`` (the consumer's
+    native CompletedFrozenReuse capability) proves it holds, for a consumer
+    that capability admitted. Repository and earlier-run ordering stay exact.
+    """
     receipt = source["receipt"]
     original = receipt["producer"]
-    if (original["repository"] != plan["repository"] or original["event"] != plan["event"]
-            or original["pullRequest"] != producer["pullRequest"]
+    owner_pinned = False
+    if pinned is not None:
+        from reuse_qualification import CompletedFrozenReuse
+        import producer_scope
+        owner_pinned = (type(pinned) is CompletedFrozenReuse and original["event"] == "pull_request"
+                        and original["pullRequest"] == producer_scope.PINNED_PULL_REQUEST
+                        and plan["event"] in producer_scope.CONSUMER_EVENTS and pinned.pins_original(source))
+    if owner_pinned:
+        # The consumer and its plan are the capability's admitted scope N (PR N
+        # or merge-queue pr-N); any disagreement raises QualificationIncompatible.
+        pinned.check_consumer({"kind": "ci", "producer": producer})
+        if plan.get("pullRequest") != pinned.admitted_pull_request():
+            raise ValueError("Pinned original consumer plan differs from its admitted scope [scope:consumer]")
+    if (original["repository"] != plan["repository"]
+            or not owner_pinned and (original["event"] != plan["event"]
+                                     or original["pullRequest"] != producer["pullRequest"])
             or (original["runId"], original["runAttempt"]) >= (producer["runId"], producer["runAttempt"])):
         raise ValueError("Original member source is not an earlier producer for this consumer")
     batch = _CI_OBSERVATIONS.get()
@@ -8368,7 +8390,7 @@ def _authenticate_runtime_original_reference_source(plan, producer, source, *,
 
 @measured
 def _capture_runtime_original_reference_members(plan, producer, source, references, destination, *,
-                                               trusted_workflow_sha, token):
+                                               trusted_workflow_sha, token, pinned=None):
     """Fresh original source gates plus member SHA qualified by the current upload.
 
     This is the same custody protocol as Runtime wave references. It is never
@@ -8376,7 +8398,7 @@ def _capture_runtime_original_reference_members(plan, producer, source, referenc
     """
     from runtime_reference_archive import open_reference_archive, copy_reference_member
     artifact, original, observed, workflow = _authenticate_runtime_original_reference_source(
-        plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token)
+        plan, producer, source, trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=pinned)
     receipt = source["receipt"]
     if source["kind"] == "phase":
         from products.verified_evidence import runtime_original_cache
@@ -8616,7 +8638,7 @@ def _restore_checkpoint_projection(locator, *, plan, producer, original, refs,
     rows = [row for row in refs["references"] if row["source"] == source["relativePath"]
             and row["relativePath"].startswith(source["relativePath"] + "/")]
     transport = _capture_runtime_original_reference_members(plan, producer, source, rows, original,
-        trusted_workflow_sha=trusted_workflow_sha, token=token)
+        trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=completed_frozen)
     _register_qualified_original_projections(original, {**refs, "sources": sources}, [transport],
         trusted_workflow_sha=trusted_workflow_sha, completed_frozen=completed_frozen)
     count("restoredCheckpointProjections")
@@ -8713,7 +8735,7 @@ def _restore_runtime_original_projections(plan, producer, state, *, trusted_work
             if declared != expected:
                 raise ValueError("Restored projection inventory differs from the authenticated carrier")
             upload, origin, fresh, _ = _authenticate_runtime_original_reference_source(plan, producer, source,
-                trusted_workflow_sha=trusted_workflow_sha, token=token)
+                trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=completed_frozen)
             sources.append(source)
             transports.append({"artifact": upload, "captureProducer": origin, "observed": fresh})
         _register_qualified_original_projections(original, {**references, "sources": sources}, transports,
@@ -9030,7 +9052,7 @@ def capture_runtime_resume_upload(
             def capture_source(source, records, target):
                 original_reference_transports.append(_capture_runtime_original_reference_members(
                     plan, producer, source, records, target,
-                    trusted_workflow_sha=trusted_workflow_sha, token=token))
+                    trusted_workflow_sha=trusted_workflow_sha, token=token, pinned=completed_frozen))
             original_references = _canonical_control(original_reference_path, "Runtime original references")
             validate_original_references(original_references)
             import hydrated_evidence
@@ -9069,7 +9091,8 @@ def capture_runtime_resume_upload(
                                    ['product-resume-inputs/plan/impact-plan.json'])
                 reference_transport = _capture_runtime_reference_members(plan, plan_bytes, producer,
                     base, target, trusted_workflow_sha=trusted_workflow_sha, token=token,
-                    wanted=wanted, _targets={path: tuple(paths) for path, paths in targets.items()})
+                    wanted=wanted, _targets={path: tuple(paths) for path, paths in targets.items()},
+                    pinned=completed_frozen)
             zipped = resolve_reference_handoff(original, None, references, capture_source=capture_base,
                 state_wave=state_wave, sdk_state_wave=sdk_state_wave,
                 **({'selected_paths': selected_paths} if selected_paths is not None else {}))
