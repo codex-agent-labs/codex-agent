@@ -1489,6 +1489,76 @@ class CompletedFrozenReuseTest(unittest.TestCase):
                 self.assertEqual(46, len(started))  # Join every observation before returning a failure.
                 self.assertEqual(before, inventory.regular_file_inventory(root / "prior"))
 
+    def test_prior_runtime_receipts_admit_pinned_pr31_originals_for_the_consumer_scope(self):
+        """T4 at the prior-Runtime gate for a PR-37 consumer of the pinned PR-31 receipts."""
+        pr = lambda number: {**PR_31_RUNNER, "GITHUB_ACTIONS": "true", "GITHUB_REF": f"refs/pull/{number}/merge"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cap, _ = self.fetched(root)
+            issuer = dict(repository=qualification.REPOSITORY, pullRequest=31,
+                          event="pull_request", runId=8, runAttempt=1)
+            official = dict(id=7, run_attempt=1, event="pull_request", path=".github/workflows/ci.yml",
+                status="completed", conclusion="failure", pull_requests=[{"number": 31}],
+                repository={"full_name": qualification.REPOSITORY, "fork": False},
+                head_repository={"full_name": qualification.REPOSITORY, "fork": False})
+            runs = {"current": official}
+
+            def observe(_plan, _producer, source, **kwargs):
+                self.assertIs(qualification.CompletedFrozenReuse, type(kwargs.get("pinned")))
+                receipt = source["receipt"]
+                name = "product-validation / runtime-" + "-".join(
+                    receipt[field] for field in ("component", "phase", "target"))
+                return {"id": 71, "digest": POLICY}, {}, [{"run": official,
+                    "testedCommit": receipt["producer"]["commit"],
+                    "jobs": [{"id": 71, "name": name}]}], "a" * 40
+
+            def locator(_artifact, _workflow, instance, _job):
+                return {**{name: getattr(instance, name) for name in FIELDS},
+                        "artifact": {"id": 71, "digest": POLICY}}
+
+            with patch.object(product_reuse, "_authenticate_runtime_original_reference_source", side_effect=observe), \
+                    patch.object(product_reuse, "_runtime_original_locator", side_effect=locator), \
+                    patch.object(product_reuse, "api_json", side_effect=lambda *_: runs["current"]), \
+                    patch.object(product_reuse, "_runtime_prior_workflow_sha", return_value="a" * 40):
+                expected = product_reuse._capture_completed_runtime_controls({}, issuer, root / "prior", root,
+                    completed_frozen=cap, trusted_workflow_sha="a" * 40, token="fixture")
+                consumer = {**issuer, "pullRequest": 37}
+                plan = {**consumer}
+
+                def prior(capability, plan=plan, consumer=consumer):
+                    return product_reuse._prior_failed_runtime_objects(root / "prior", root, plan=plan,
+                        consumer_producer=consumer, completed_frozen=capability,
+                        trusted_workflow_sha="a" * 40, token="fixture")
+
+                with patch.dict(os.environ, pr(37), clear=True):
+                    # (1) Pinned receipts whose merged PR-31 run lost its live association: admitted.
+                    runs["current"] = {**official, "pull_requests": []}
+                    fresh, _ = self.fetched(self.directory(root / "pr37"))
+                    self.assertEqual(expected, sorted(prior(fresh), key=product_reuse._identity))
+                    # A live PR-31 association is admitted too.
+                    runs["current"] = official
+                    fresh, _ = self.fetched(self.directory(root / "pr37-live"))
+                    self.assertEqual(expected, sorted(prior(fresh), key=product_reuse._identity))
+                    # (4) A pinned receipt whose official run belongs to another PR is rejected.
+                    runs["current"] = {**official, "pull_requests": [{"number": 38}]}
+                    fresh, _ = self.fetched(self.directory(root / "pr38-run"))
+                    with self.assertRaisesRegex(ValueError, "differs from official CI"):
+                        prior(fresh)
+                    runs["current"] = {**official, "pull_requests": []}
+                    # (2) A PR-31 receipt the capability does not pin keeps the same-PR rule.
+                    fresh, _ = self.fetched(self.directory(root / "unpinned"))
+                    with patch.object(qualification.CompletedFrozenReuse, "pins_receipt", return_value=False), \
+                            self.assertRaisesRegex(ValueError, "not an original PR phase"):
+                        prior(fresh)
+                    # (3) A plan whose PR differs from the runner's admitted scope is rejected.
+                    fresh, _ = self.fetched(self.directory(root / "plan38"))
+                    with self.assertRaisesRegex(ValueError, r"admitted scope \[scope:consumer\]"):
+                        prior(fresh, plan={**plan, "pullRequest": 38})
+                    # A consumer of another PR than the runner is rejected by the capability.
+                    fresh, _ = self.fetched(self.directory(root / "consumer38"))
+                    with self.assertRaisesRegex(qualification.QualificationIncompatible, "scope:consumer"):
+                        prior(fresh, plan={**plan, "pullRequest": 38}, consumer={**consumer, "pullRequest": 38})
+
     def test_mixed_recovery_keeps_new_aggregate_on_full_original_body_path(self):
         import shutil
         with tempfile.TemporaryDirectory() as temporary:
