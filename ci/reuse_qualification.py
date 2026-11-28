@@ -998,6 +998,24 @@ class CompletedFrozenReuse:
                 "Completed reuse consumer differs from its runner scope [scope:consumer]")
         return self._consumer_scope
 
+    def admitted_pull_request(self):
+        """The PR scope a completed-frozen lookup session must carry.
+
+        On a hosted runner, or once ``check_consumer`` ran, this is the consumer's
+        admitted scope N (PR N, or merge-queue ``pr-N``); missing or disagreeing
+        scope raises ``QualificationIncompatible``. Read-only local acceptance
+        (no hosted runner identity, no runner scope, no checked consumer) has no
+        consumer scope and stays bound to the pinned issuer PR.
+        """
+        import os
+        if (self._consumer_scope is None and not os.environ.get("GITHUB_ACTIONS")
+                and not os.environ.get("GITHUB_RUN_ID")):
+            try:
+                producer_scope.consumer_scope(os.environ)
+            except producer_scope.ScopeRejected:
+                return producer_scope.PINNED_PULL_REQUEST
+        return self._admitted_scope()
+
     def check_consumer(self, consumer):
         self._values()
         if self._checkpoint is not None:
