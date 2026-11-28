@@ -49,33 +49,98 @@ class RecoveryGetRetryTest(unittest.TestCase):
                 self.assertEqual([mock.call(delay) for delay in (1, 2, 4, 8, 16, 30, 30)]
                                  if attempts == 8 else [], sleep.call_args_list)
 
-    def test_primary_exhaustion_waits_once_for_reset_without_changing_request(self):
+    @staticmethod
+    def exhausted(reset, url='https://api.github.com/repos/a/b/actions/runs/1', **extra):
         headers = {'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '0',
-                   'x-ratelimit-used': '5000', 'x-ratelimit-reset': '1120'}
-        for repeated in (False, True):
-            error = urllib.error.HTTPError('https://api.github.com/repos/a/b/actions/runs/1',
-                                          403, 'denied', headers, io.BytesIO(b'private body'))
-            self.addCleanup(error.close)
-            operation = mock.Mock(side_effect=[error, error if repeated else {'id': 1}])
-            with mock.patch.object(recovery.time, 'time', return_value=1000), \
-                    mock.patch.object(recovery.time, 'sleep') as sleep, \
-                    mock.patch.object(recovery.sys, 'stderr', new_callable=io.StringIO) as log:
-                if repeated:
-                    with self.assertRaises(urllib.error.HTTPError):
-                        recovery._retry_github_get(operation)('exact-url', token='secret-token')
-                else:
-                    self.assertEqual({'id': 1}, recovery._retry_github_get(operation)(
-                        'exact-url', token='secret-token'))
-                self.assertEqual([mock.call('exact-url', token='secret-token')] * 2, operation.call_args_list)
-                sleep.assert_called_once_with(122)
-                self.assertNotIn('secret-token', log.getvalue())
-                self.assertNotIn('private body', log.getvalue())
-                self.assertNotIn(error.url, log.getvalue())
-                diagnostics = [json.loads(line.removeprefix('github-api-error '))
-                               for line in log.getvalue().splitlines()
-                               if line.startswith('github-api-error ')]
-                self.assertEqual([{'status': 403, 'messageKind': 'unclassified',
-                    'rateLimit': {name: int(value) for name, value in headers.items()}}], diagnostics)
+                   'x-ratelimit-used': '5000', 'x-ratelimit-reset': str(reset), **extra}
+        return urllib.error.HTTPError(url, 403, 'denied', headers, io.BytesIO(b'private body'))
+
+    def clocked(self, responses, *, jitter=0.0, backoff=20.0, start=1000):
+        """Run one retried call against fake responses and a fake clock that sleeps advance."""
+        clock = {'now': start}
+        errors = [value for value in responses if isinstance(value, BaseException)]
+        for error in errors:
+            if isinstance(error, urllib.error.HTTPError):
+                self.addCleanup(error.close)
+        operation = mock.Mock(side_effect=list(responses))
+
+        def uniform(low, high):
+            self.assertIn((low, high), {recovery._RATE_LIMIT_JITTER, recovery._RATE_LIMIT_STALE_BACKOFF})
+            return jitter if (low, high) == recovery._RATE_LIMIT_JITTER else backoff
+
+        def sleep(seconds):
+            clock['now'] += seconds
+
+        with mock.patch.object(recovery.time, 'time', side_effect=lambda: clock['now']), \
+                mock.patch.object(recovery.time, 'sleep', side_effect=sleep) as slept, \
+                mock.patch.object(recovery, '_uniform', side_effect=uniform), \
+                mock.patch.object(recovery.sys, 'stderr', new_callable=io.StringIO) as log:
+            try:
+                result = recovery._retry_github_get(operation)('exact-url', token='secret-token')
+            except urllib.error.HTTPError as error:
+                result = error
+        return result, operation, [call.args[0] for call in slept.call_args_list], log.getvalue()
+
+    def test_primary_exhaustion_waits_for_reset_plus_margin_and_jitter_without_changing_request(self):
+        error = self.exhausted(1120)
+        result, operation, sleeps, log = self.clocked([error, {'id': 1}], jitter=7.5)
+        self.assertEqual({'id': 1}, result)
+        self.assertEqual([mock.call('exact-url', token='secret-token')] * 2, operation.call_args_list)
+        self.assertEqual([120 + 5 + 7.5], sleeps)
+        self.assertIn('github-api-rate-limit: waiting 132.500s for primary quota reset (wait 1/3)', log)
+        self.assertNotIn('secret-token', log)
+        self.assertNotIn('private body', log)
+        self.assertNotIn(error.url, log)
+        diagnostics = [json.loads(line.removeprefix('github-api-error '))
+                       for line in log.splitlines() if line.startswith('github-api-error ')]
+        self.assertEqual([{'status': 403, 'messageKind': 'unclassified',
+            'rateLimit': {name: int(value) for name, value in error.headers.items()}}], diagnostics)
+
+    def test_same_reset_re_403_backs_off_and_re_reads_the_reset(self):
+        # S20: woke at reset + margin and saw the old window (same reset epoch) again.
+        result, operation, sleeps, log = self.clocked(
+            [self.exhausted(1120), self.exhausted(1120), {'id': 1}], jitter=0.0, backoff=17.0)
+        self.assertEqual({'id': 1}, result)
+        self.assertEqual(3, operation.call_count)
+        self.assertEqual([125.0, 17.0], sleeps)
+        self.assertIn('waiting 17.000s for primary quota reset (wait 2/3, reset not advanced)', log)
+        self.assertEqual(2, log.count('github-api-rate-limit: waiting'))
+
+    def test_advanced_reset_waits_for_the_new_window(self):
+        result, operation, sleeps, log = self.clocked(
+            [self.exhausted(1120), self.exhausted(1400), {'id': 1}], jitter=3.0)
+        self.assertEqual({'id': 1}, result)
+        self.assertEqual(3, operation.call_count)
+        # Woke at 1000 + 128 = 1128; the advanced reset 1400 is 272 s away.
+        self.assertEqual([128.0, 272.0 + 5 + 3.0], sleeps)
+        self.assertNotIn('reset not advanced', log)
+
+    def test_rate_limit_waits_are_capped_per_call(self):
+        responses = [self.exhausted(1120)] * 4 + [{'id': 1}]
+        result, operation, sleeps, log = self.clocked(responses, backoff=15.0)
+        self.assertIsInstance(result, urllib.error.HTTPError)
+        self.assertEqual(4, operation.call_count)
+        self.assertEqual([125.0, 15.0, 15.0], sleeps)
+        self.assertEqual(3, log.count('github-api-rate-limit: waiting'))
+        self.assertIn('(wait 3/3, reset not advanced)', log)
+
+    def test_non_rate_limit_403_still_raises_immediately_even_after_a_wait(self):
+        denied = urllib.error.HTTPError('https://api.github.com/repos/a/b/actions/runs/1', 403, 'denied',
+                                        {'x-ratelimit-remaining': '4000'}, None)
+        result, operation, sleeps, _ = self.clocked([denied, {'id': 1}])
+        self.assertIs(denied, result)
+        self.assertEqual(1, operation.call_count)
+        self.assertEqual([], sleeps)
+        result, operation, sleeps, _ = self.clocked([self.exhausted(1120), denied, {'id': 1}])
+        self.assertIs(denied, result)
+        self.assertEqual(2, operation.call_count)
+        self.assertEqual([125.0], sleeps)
+
+    def test_stale_reset_from_an_earlier_window_never_authorizes_a_first_wait(self):
+        result, operation, sleeps, _ = self.clocked([self.exhausted(900), {'id': 1}])
+        self.assertIsInstance(result, urllib.error.HTTPError)
+        self.assertEqual(1, operation.call_count)
+        self.assertEqual([], sleeps)
 
     def test_other_denials_and_unbounded_or_untrusted_resets_never_authorize_wait(self):
         headers = {'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '0',
