@@ -852,6 +852,7 @@ jobs:
       plan_artifact: codex-agent-ci-plan-${{ steps.impact.outputs.validation_tree }}
       plan_id: ${{ steps.upload_plan.outputs.artifact-id }}
       plan_control_id: ${{ steps.upload_plan_control.outputs.artifact-id }}
+      plan_control_digest: ${{ steps.upload_plan_control.outputs.artifact-digest }}
       plan_digest: sha256:${{ steps.upload_plan.outputs.artifact-digest }}
       product_matrix: ${{ steps.reviewed-runtime-selection.outputs.product_matrix }}
       contract_matrix: ${{ steps.product-selection.outputs.contract_matrix }}
@@ -967,6 +968,11 @@ jobs:
             --github-ref "$GITHUB_REF" --github-sha "$GITHUB_SHA" \
             --output build/ci/impact-plan.json \
             --github-output "$GITHUB_OUTPUT" "${flags[@]}"
+      # Merge-group retained reuse verifies native attestations (signer/source digest pins).
+      - id: retained-native-gh
+        if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && github.event_name == 'merge_group'
+        continue-on-error: true
+        run: bash .github/actions/restore-reuse-qualification/install-gh.sh
       - id: validation-reuse
         if: steps.event-authorization.outputs.authorized == 'true' && steps.impact.outputs.remote_build_authorized == 'true' && github.event_name != 'workflow_dispatch'
         env:
@@ -7608,6 +7614,8 @@ jobs:
     if: always() && !inputs.toolingOnly
     needs: [workflow-lint, plan, product, contract-validation, contract-phase10-pgp-authority, contract-phase10-maven, contract-phase10-output-record, product-resume, runtime-linux-arm64-supervisor, runtime-workers-1, runtime-collect-1, runtime-workers-2, runtime-collect-2, runtime-workers-3, runtime-collect-3, runtime-workers-4, runtime-collect-4, runtime-continuation, runtime-signing-prepare-native, runtime-native-attestation, runtime-aggregate, runtime-collect-5, runtime-aggregate-continuation, runtime-signing-prepare-aggregate, runtime-aggregate-attestation, runtime-phase10-maven, sdk-inputs, sdk-ios-binary-plan, sdk-ios-binary, sdk-collect-3, android, android-runtime-evidence, desktop, retained-native-source, retained-apple-source, retained-apple-package, sdk-native-wrappers, apple, consumers, retained-consumers, sdk-javascript, sdk-native-packages, sdk-ios-packages, sdk-javascript-metadata-result, sdk-native-result, sdk-android-binary-result, sdk-android-package-result, sdk-android-validation-result, sdk-android-metadata-result, sdk-completion, sdk-completion-full-reuse, sdk-catalog, sdk-parity, workflow-source-reuse, workflow-source-shards, workflow-source-checks]
     runs-on: ubuntu-24.04
+    outputs:
+      retained_contributions_digest: ${{ steps.upload_retained_contributions.outputs.artifact-digest }}
     steps:
       - name: Require readiness and successful prerequisites
         env:
@@ -7818,6 +7826,27 @@ jobs:
             [[ "$PRODUCT_RESUME_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
             [[ "$PRODUCT_RESUME_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
           fi
+      - name: Require a consistent merge-group retained reuse decision
+        env:
+          REUSED: ${{ needs.plan.outputs.validation_reused }}
+          KIND: ${{ needs.plan.outputs.validation_reuse_kind }}
+        run: |
+          set -euo pipefail
+          # Retained reuse exists only as merge_group + reused=true + kind=retained;
+          # any other combination naming it is an inconsistent plan and fails the gate.
+          case "$KIND" in
+            '') ;;
+            retained)
+              if [ "$GITHUB_EVENT_NAME" != merge_group ] || [ "$REUSED" != true ]; then
+                echo '::error::Retained validation reuse is inconsistent with its event or reuse decision'
+                exit 1
+              fi
+              ;;
+            *)
+              echo '::error::Unknown validation reuse kind'
+              exit 1
+              ;;
+          esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -7915,7 +7944,8 @@ jobs:
                   if os.environ['RETAINED_CONSUMERS'] == 'true' else {}),
               auxiliary_contracts=os.environ['TOOLING_MISS'] == 'true' and not any(contract[k] for k in ('build', 'test', 'metadata')))
           PYCODE
-      - name: Preserve distinct current validation contributions
+      - id: upload_retained_contributions
+        name: Preserve distinct current validation contributions
         if: needs.plan.outputs.retained_android == 'true' || needs.plan.outputs.retained_node_js == 'true' || needs.plan.outputs.retained_consumers == 'true' || needs.plan.outputs.retained_native_source == 'true' || needs.plan.outputs.retained_apple_source == 'true' || needs.plan.outputs.reviewed_runtime == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -7926,7 +7956,7 @@ jobs:
           compression-level: 0
           retention-days: 90
       - name: Require an exact receipt set
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && needs.plan.outputs.validation_reuse_kind != 'retained' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && !(github.event_name == 'merge_group' && needs.plan.outputs.validation_reused == 'true' && needs.plan.outputs.validation_reuse_kind == 'retained') }}
         env:
           VALIDATION_REUSED: ${{ needs.plan.outputs.validation_reused }}
           TOOLING_MISS: ${{ needs.plan.outputs.tooling_miss }}
@@ -7951,7 +7981,7 @@ jobs:
           run-id: ${{ needs.sdk-parity.outputs.artifact_run_id }}
           path: build/ci/cross-language-bindings
       - name: Stage the exact reusable validation artifact
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && needs.plan.outputs.validation_reuse_kind != 'retained' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && !(github.event_name == 'merge_group' && needs.plan.outputs.validation_reused == 'true' && needs.plan.outputs.validation_reuse_kind == 'retained') }}
         env:
           M8_REQUIRED: ${{ needs.plan.outputs.lane_ios_swift_tests_test }}
           M11_REQUIRED: ${{ needs.plan.outputs.native_wrappers }}
@@ -7989,7 +8019,7 @@ jobs:
           count=$(find "$validation_root" -maxdepth 1 -type f | wc -l | tr -d ' ')
           test "$count" -eq 2 || test "$count" -eq 11 || test "$count" -eq 16
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && needs.plan.outputs.validation_reuse_kind != 'retained' }}
+        if: ${{ !inputs.fullReuseAcceptanceOnly && needs.plan.outputs.retained_android != 'true' && needs.plan.outputs.retained_node_js != 'true' && needs.plan.outputs.retained_consumers != 'true' && needs.plan.outputs.retained_native_source != 'true' && needs.plan.outputs.retained_apple_source != 'true' && needs.plan.outputs.reviewed_runtime != 'true' && !(github.event_name == 'merge_group' && needs.plan.outputs.validation_reused == 'true' && needs.plan.outputs.validation_reuse_kind == 'retained') }}
         with:
           if-no-files-found: error
           overwrite: true
@@ -7997,9 +8027,13 @@ jobs:
           path: build/ci/final-validation/*
           compression-level: 0
           retention-days: 90
+      - id: retained-native-gh
+        if: ${{ !inputs.fullReuseAcceptanceOnly && github.event_name == 'merge_group' && needs.plan.outputs.validation_reused == 'true' && needs.plan.outputs.validation_reuse_kind == 'retained' }}
+        run: bash .github/actions/restore-reuse-qualification/install-gh.sh
       - name: Re-verify the merge-group retained PR validation
         if: ${{ !inputs.fullReuseAcceptanceOnly && github.event_name == 'merge_group' && needs.plan.outputs.validation_reused == 'true' && needs.plan.outputs.validation_reuse_kind == 'retained' }}
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}
           SOURCE_RUN_ID: ${{ needs.plan.outputs.validation_source_run_id }}
           SOURCE_RUN_ATTEMPT: ${{ needs.plan.outputs.validation_source_run_attempt }}
@@ -8012,7 +8046,8 @@ jobs:
           for name in ('SOURCE_RUN_ID', 'SOURCE_RUN_ATTEMPT'):
               if re.fullmatch(r'[1-9][0-9]{0,19}', os.environ[name]) is None:
                   raise ValueError('Retained PR validation source identity is not exact')
-          # Offline: the plan-job bundle, the current plan and this runner's scope; never schema-1.
+          # The plan-job bundle (exact bytes and native attestations), the current plan
+          # and this runner's scope; no run metadata, and never schema-1.
           stage_merge_group_retained_validation(Path('build/ci/plan/reused-retained-validation'),
               Path('build/ci/plan/impact-plan.json'), Path('build/ci/merge-group-retained-validation'),
               repository_root=Path.cwd(), environ=os.environ, trusted_workflow_sha=os.environ['TRUSTED_WORKFLOW_SHA'],
@@ -8022,7 +8057,7 @@ jobs:
         if: ${{ !inputs.fullReuseAcceptanceOnly && github.event_name == 'merge_group' && needs.plan.outputs.validation_reused == 'true' && needs.plan.outputs.validation_reuse_kind == 'retained' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: codex-agent-merge-group-retained-validation-${{ needs.plan.outputs.validation_tree }}
+          name: codex-agent-merge-group-retained-validation-${{ needs.plan.outputs.validation_tree }}-attempt-${{ github.run_attempt }}
           path: build/ci/merge-group-retained-validation
           if-no-files-found: error
           overwrite: false
@@ -8082,5 +8117,111 @@ jobs:
           overwrite: false
           name: codex-agent-current-head-acceptance-${{ needs.plan.outputs.validation_tree }}
           path: build/ci/current-head-acceptance
+          compression-level: 0
+          retention-days: 90
+  retained-validation-record:
+    # S1050/B1: the only job that signs retained PR validation for merge-queue
+    # reuse. It never executes the tested tree (no checkout, cache, local action
+    # or secret): it signs the exact zip digests that the plan job and merge gate
+    # of this workflow uploaded, after the API confirms them. Publication only
+    # enables later reuse; nothing waits on it and no step decides a result.
+    if: >-
+      !inputs.fullReuseAcceptanceOnly && (always() && !cancelled() && !inputs.toolingOnly &&
+      !inputs.runtimeRecoveryOnly && github.event_name == 'pull_request' && needs.plan.result == 'success' &&
+      needs.merge-gate.result == 'success' && needs.merge-gate.outputs.retained_contributions_digest != '')
+    needs: [plan, merge-gate]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - id: publication
+        env:
+          PUBLISHER_SHA: ${{ needs.plan.outputs.publisher_sha }}
+          NATIVE_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          NATIVE_WORKFLOW_REPOSITORY: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          NATIVE_WORKFLOW_PATH: ${{ fromJSON(toJSON(job)).workflow_file_path }}
+          FORK: ${{ github.event.pull_request.head.repo.fork }}
+          TREE: ${{ needs.plan.outputs.validation_tree }}
+          PLAN_DIGEST: ${{ needs.plan.outputs.plan_control_digest }}
+          CONTRIBUTIONS_DIGEST: ${{ needs.merge-gate.outputs.retained_contributions_digest }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -I -B - <<'PY'
+          import json, os, re, urllib.parse, urllib.request
+          # Only an exact protected publisher of a same-repository PR signs, and only
+          # digests the API confirms for this run's exact artifact names.
+          env, outputs = os.environ, {'publish': 'false'}
+          try:
+              tree, attempt, run = env['TREE'], env['GITHUB_RUN_ATTEMPT'], env['GITHUB_RUN_ID']
+              exact = (re.fullmatch(r'[0-9a-f]{40}', env['PUBLISHER_SHA']) and env['NATIVE_WORKFLOW_SHA'] == env['PUBLISHER_SHA']
+                       and env['NATIVE_WORKFLOW_REPOSITORY'] == 'codex-agent-labs/codex-agent'
+                       and env['NATIVE_WORKFLOW_PATH'] == '.github/workflows/product-validation.yml'
+                       and env['GITHUB_REPOSITORY'] == 'codex-agent-labs/codex-agent'
+                       and env['GITHUB_EVENT_NAME'] == 'pull_request' and env['FORK'] == 'false'
+                       and re.fullmatch(r'[0-9a-f]{40}', tree) and re.fullmatch(r'[1-9][0-9]{0,19}', attempt)
+                       and re.fullmatch(r'[1-9][0-9]{0,19}', run))
+              subjects = {'plan': ('codex-agent-ci-plan-control-' + tree, env['PLAN_DIGEST']),
+                          'contributions': (f'codex-agent-current-validation-contributions-{tree}-attempt-{attempt}',
+                                            env['CONTRIBUTIONS_DIGEST'])}
+              for field, (name, digest) in subjects.items():
+                  if not exact or re.fullmatch(r'[0-9a-f]{64}', digest) is None:
+                      raise ValueError('not an exact protected publication')
+                  url = ('https://api.github.com/repos/codex-agent-labs/codex-agent/actions/runs/' + run
+                         + '/artifacts?' + urllib.parse.urlencode({'name': name}))
+                  request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + env['GITHUB_TOKEN'],
+                      'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'})
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      items = [item for item in json.load(response)['artifacts'] if item.get('name') == name]
+                  if (len(items) != 1 or items[0].get('digest') != 'sha256:' + digest or items[0].get('expired') is not False
+                          or (items[0].get('workflow_run') or {}).get('id') != int(run)):
+                      raise ValueError(field + ' artifact is not exactly the uploaded digest')
+                  outputs[field + '_name'], outputs[field + '_digest'] = name, digest
+              outputs.update(publish='true', tree=tree, attempt=attempt)
+          except Exception as error:
+              print('[route:merge-queue-reuse:record] publish=false: ' + type(error).__name__)
+              outputs = {'publish': 'false'}
+          with open(env['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(''.join(f'{key}={value}\n' for key, value in outputs.items()))
+          PY
+      - id: attest-plan
+        if: steps.publication.outputs.publish == 'true'
+        continue-on-error: true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publication.outputs.plan_name }}
+          subject-digest: sha256:${{ steps.publication.outputs.plan_digest }}
+          create-storage-record: false
+      - id: attest-contributions
+        if: steps.publication.outputs.publish == 'true'
+        continue-on-error: true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publication.outputs.contributions_name }}
+          subject-digest: sha256:${{ steps.publication.outputs.contributions_digest }}
+          create-storage-record: false
+      - id: bundle
+        if: steps.publication.outputs.publish == 'true' && steps.attest-plan.outcome == 'success' && steps.attest-contributions.outcome == 'success'
+        continue-on-error: true
+        env:
+          PLAN_BUNDLE: ${{ steps.attest-plan.outputs.bundle-path }}
+          CONTRIBUTIONS_BUNDLE: ${{ steps.attest-contributions.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/retained-validation-record"
+          cp "$PLAN_BUNDLE" "$RUNNER_TEMP/retained-validation-record/plan.bundle.jsonl"
+          cp "$CONTRIBUTIONS_BUNDLE" "$RUNNER_TEMP/retained-validation-record/contributions.bundle.jsonl"
+      - if: steps.publication.outputs.publish == 'true' && steps.bundle.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-agent-retained-validation-attestations-${{ steps.publication.outputs.tree }}-attempt-${{ steps.publication.outputs.attempt }}
+          path: |
+            ${{ runner.temp }}/retained-validation-record/plan.bundle.jsonl
+            ${{ runner.temp }}/retained-validation-record/contributions.bundle.jsonl
+          if-no-files-found: error
+          overwrite: false
           compression-level: 0
           retention-days: 90

@@ -30,6 +30,9 @@ RUN, ATTEMPT = 46200000001, 2
 GATE_START, GATE_END = "2026-11-28T10:00:00Z", "2026-11-28T10:05:00Z"
 CONTRIBUTIONS_NAME = f"codex-agent-current-validation-contributions-{TREE}-attempt-{ATTEMPT}"
 PLAN_NAME = f"codex-agent-ci-plan-control-{TREE}"
+ATTESTATIONS_NAME = f"codex-agent-retained-validation-attestations-{TREE}-attempt-{ATTEMPT}"
+RECORD_START, RECORD_END = "2026-11-28T10:05:10Z", "2026-11-28T10:06:00Z"
+SIGNER = f"https://github.com/{REPO}/.github/workflows/product-validation.yml@refs/heads/reuse-authority"
 ENVIRON = {"GITHUB_REPOSITORY": REPO, "GITHUB_EVENT_NAME": "merge_group",
            "GITHUB_REF": f"refs/heads/gh-readonly-queue/main/pr-{PR}-{QUEUE}", "GITHUB_SHA": QUEUE}
 
@@ -75,6 +78,32 @@ def repository(fork=False, name=REPO):
     return {"full_name": name, "fork": fork}
 
 
+def pr_repository(name=REPO, identity=7):
+    """The shape of a repository inside a workflow run's ``pull_requests`` entry."""
+    return {"id": identity, "url": f"https://api.github.com/repos/{name}", "name": name.split("/")[-1]}
+
+
+def certificate(*, number=PR, run=RUN, attempt=ATTEMPT, commit=MERGE, signer=SIGNER, signer_digest=TRUSTED,
+                trigger="pull_request", runner="github-hosted", repository_uri=f"https://github.com/{REPO}"):
+    """The certificate fields ``gh attestation verify --format json`` reports for a GitHub-hosted signer."""
+    ref = f"refs/pull/{number}/merge"
+    return {
+        "issuer": "https://token.actions.githubusercontent.com", "subjectAlternativeName": signer,
+        "buildSignerURI": signer, "buildSignerDigest": signer_digest, "runnerEnvironment": runner,
+        "githubWorkflowTrigger": trigger, "buildTrigger": trigger, "githubWorkflowSHA": commit,
+        "githubWorkflowRef": ref, "githubWorkflowRepository": REPO, "sourceRepositoryURI": repository_uri,
+        "sourceRepositoryDigest": commit, "sourceRepositoryRef": ref,
+        "buildConfigURI": f"{repository_uri}/.github/workflows/ci.yml@{ref}", "buildConfigDigest": commit,
+        "runInvocationURI": f"{repository_uri}/actions/runs/{run}/attempts/{attempt}",
+    }
+
+
+def signed_bundle(name, data, **fields):
+    """A stand-in Sigstore bundle: what the protected signer would attest for ``data``."""
+    return raw({"subject": [{"name": name, "digest": {"sha256": hashlib.sha256(data).hexdigest()}}],
+                "predicate_type": "https://slsa.dev/provenance/v1", "certificate": certificate(**fields)})
+
+
 def compare(ancestor):
     return {"base_commit": {"sha": ancestor}, "merge_base_commit": {"sha": ancestor},
             "behind_by": 0, "status": "identical"}
@@ -98,12 +127,16 @@ class FakeAPI:
             901: archive(contributions_members or {"current-validation-contributions.json": self.contributions_raw}),
             902: archive({"impact-plan.json": self.source_raw}),
         }
+        self.sign()
         self.verify_downloads = verify_downloads
-        pull_entry = {"number": PR, "base": {"sha": BASE, "ref": "main", "repo": repository()},
-                      "head": {"sha": HEAD, "ref": "feature", "repo": repository()}}
+        self.verified = []
+        pull_entry = {"id": 1, "number": PR, "url": f"https://api.github.com/repos/{REPO}/pulls/{PR}",
+                      "base": {"sha": BASE, "ref": "main", "repo": pr_repository()},
+                      "head": {"sha": HEAD, "ref": "feature", "repo": pr_repository()}}
         self.run = {"id": RUN, "run_attempt": ATTEMPT, "event": "pull_request", "status": "completed",
                     "conclusion": "success", "path": ".github/workflows/ci.yml", "head_sha": HEAD,
-                    "head_branch": "feature", "repository": repository(), "head_repository": repository(),
+                    "head_branch": "feature", "repository": {**repository(), "id": 7},
+                    "head_repository": {**repository(), "id": 7},
                     "pull_requests": [pull_entry],
                     "referenced_workflows": [
                         {"path": f"{REPO}/.github/workflows/product-validation.yml@reuse-authority",
@@ -116,6 +149,7 @@ class FakeAPI:
         self.responses = {
             f"pulls/{PR}": self.pull,
             f"actions/runs/{RUN}": self.run,
+            f"actions/runs/{RUN}/attempts/{ATTEMPT}": self.run,
             f"git/commits/{MERGE}": {"sha": MERGE, "tree": {"sha": TREE}, "parents": [{"sha": BASE}, {"sha": HEAD}]},
             f"compare/{HEAD}...{HEAD}?per_page=1": compare(HEAD),
             f"compare/{BASE}...main?per_page=1": compare(BASE),
@@ -126,12 +160,46 @@ class FakeAPI:
             f"actions/runs/{RUN}/artifacts?name={CONTRIBUTIONS_NAME}": [self.artifact(901, CONTRIBUTIONS_NAME,
                                                                                        "2026-11-28T10:03:00Z")],
             f"actions/runs/{RUN}/artifacts?name={PLAN_NAME}": [self.artifact(902, PLAN_NAME, "2026-11-28T09:00:00Z")],
+            f"actions/runs/{RUN}/artifacts?name={ATTESTATIONS_NAME}": [
+                self.artifact(903, ATTESTATIONS_NAME, "2026-11-28T10:05:50Z")],
             f"actions/runs/{RUN}/attempts/{ATTEMPT}/jobs": [
                 self.job(1, scope.RETAINED_GATE_JOB, GATE_START, GATE_END),
-                self.job(2, scope.RETAINED_OUTER_GATE_JOB, "2026-11-28T10:05:01Z", "2026-11-28T10:05:09Z"),
-                self.job(3, "product-validation / plan", "2026-11-28T08:00:00Z", "2026-11-28T09:00:05Z")],
+                self.job(2, scope.RETAINED_OUTER_GATE_JOB, "2026-11-28T10:06:01Z", "2026-11-28T10:06:09Z"),
+                self.job(3, "product-validation / plan", "2026-11-28T08:00:00Z", "2026-11-28T09:00:05Z"),
+                self.job(4, scope.RETAINED_RECORD_JOB, RECORD_START, RECORD_END)],
         }
         self.calls = []
+
+    def sign(self, plan=None, contributions=None, members=None):
+        """(Re)build the signer artifact; ``plan``/``contributions`` override certificate fields or bytes."""
+        plan, contributions = dict(plan or {}), dict(contributions or {})
+        bundles = {
+            "plan.bundle.jsonl": plan.pop("bundle", None) or signed_bundle(
+                plan.pop("name", PLAN_NAME), plan.pop("data", self.archives[902]), **plan),
+            "contributions.bundle.jsonl": contributions.pop("bundle", None) or signed_bundle(
+                contributions.pop("name", CONTRIBUTIONS_NAME), contributions.pop("data", self.archives[901]),
+                **contributions),
+        }
+        self.archives[903] = archive(bundles if members is None else members)
+        if hasattr(self, "lists"):
+            self.lists[f"actions/runs/{RUN}/artifacts?name={ATTESTATIONS_NAME}"] = [
+                self.artifact(903, ATTESTATIONS_NAME, "2026-11-28T10:05:50Z")]
+
+    def verify_attestation(self, subject, bundle, *, signer_digest, source_digest):
+        """Simulates gh: crypto binds the bundle to the subject bytes, then the CLI pins apply."""
+        self.calls.append(("verify", Path(subject).name))
+        self.verified.append((signer_digest, source_digest))
+        signed = json.loads(Path(bundle).read_bytes())
+        if signed["subject"][0]["digest"]["sha256"] != hashlib.sha256(Path(subject).read_bytes()).hexdigest():
+            raise ValueError("no matching attestation for the subject digest")
+        if (signed["certificate"]["buildSignerDigest"] != signer_digest
+                or signed["certificate"]["sourceRepositoryDigest"] != source_digest):
+            raise ValueError("certificate does not match the signer or source digest pins")
+        return [{"attestation": {"bundle": {}}, "verificationResult": {
+            "mediaType": "application/vnd.dev.sigstore.verificationresult+json;version=0.1",
+            "statement": {"_type": "https://in-toto.io/Statement/v1", "subject": signed["subject"],
+                          "predicate_type": signed["predicate_type"], "predicate": {}},
+            "signature": {"certificate": signed["certificate"]}}}]
 
     def artifact(self, identity, name, created):
         data = self.archives[identity]
@@ -203,7 +271,9 @@ class RetainedReuseTest(unittest.TestCase):
         outputs = self.discover(api)
         self.assertEqual({"reused": "true", "kind": "retained", "source_run_id": str(RUN),
                           "source_run_attempt": str(ATTEMPT), "artifact_name": CONTRIBUTIONS_NAME}, outputs)
-        self.assertEqual({"source-impact-plan.json", "current-validation-contributions.json", "source.json"},
+        self.assertEqual({"source-impact-plan.json", "current-validation-contributions.json", "source.json",
+                          "source-impact-plan.zip", "current-validation-contributions.zip",
+                          "source-impact-plan.bundle.jsonl", "current-validation-contributions.bundle.jsonl"},
                          {path.name for path in self.destination.iterdir()})
         self.assertEqual(api.source_raw, (self.destination / "source-impact-plan.json").read_bytes())
         self.assertEqual(api.contributions_raw,
@@ -212,6 +282,14 @@ class RetainedReuseTest(unittest.TestCase):
         self.assertEqual((RUN, ATTEMPT, TRUSTED, 1, 2), (pointer["runId"], pointer["runAttempt"],
                          pointer["trustedWorkflowSha"], pointer["gateJobId"], pointer["outerGateJobId"]))
         self.assertEqual(digest(api.archives[901]), pointer["contributions"]["artifactDigest"])
+        self.assertEqual(4, pointer["recordJobId"])
+        self.assertEqual(ATTESTATIONS_NAME, pointer["attestations"]["artifactName"])
+        # Both subjects were natively verified online, then again while re-verifying the staged bundle,
+        # always pinned to the trusted signer and the tested merge commit.
+        self.assertEqual(4, len(api.verified))
+        self.assertEqual({(TRUSTED, MERGE)}, set(api.verified))
+        # N3: workflow references come from the final attempt itself.
+        self.assertIn(("json", f"actions/runs/{RUN}/attempts/{ATTEMPT}"), api.calls)
         self.assertTrue(self.lines[-1].startswith("[route:merge-queue-reuse:applied] "))
         # Read-only: only fixed GETs, and only the run's final attempt jobs.
         self.assertIn(("items", f"actions/runs/{RUN}/attempts/{ATTEMPT}/jobs", "jobs"), api.calls)
@@ -233,12 +311,16 @@ class RetainedReuseTest(unittest.TestCase):
     def test_stage_reverifies_offline_and_never_mints_schema1(self):
         self.assertEqual("true", self.discover(FakeAPI())["reused"])
         staged = self.scratch / "build/ci/merge-group-retained-validation"
+        verifier = FakeAPI()
         pointer = scope.stage_merge_group_retained_validation(self.destination, self.plan_path, staged,
             repository_root=ROOT, environ=ENVIRON, trusted_workflow_sha=TRUSTED,
-            source_run_id=RUN, source_run_attempt=ATTEMPT)
+            source_run_id=RUN, source_run_attempt=ATTEMPT, verifier=verifier)
+        self.assertEqual(2, len(verifier.verified))
         self.assertEqual(RUN, pointer["runId"])
         self.assertEqual({"impact-plan.json", "source-impact-plan.json", "current-validation-contributions.json",
-                          "source.json"}, {path.name for path in staged.iterdir()})
+                          "source.json", "source-impact-plan.zip", "current-validation-contributions.zip",
+                          "source-impact-plan.bundle.jsonl", "current-validation-contributions.bundle.jsonl"},
+                         {path.name for path in staged.iterdir()})
         self.assertFalse((staged / "validation-receipt.json").exists())
         self.assertEqual(self.plan_path.read_bytes(), (staged / "impact-plan.json").read_bytes())
 
@@ -320,9 +402,186 @@ class RetainedReuseTest(unittest.TestCase):
                              "ref": "refs/pull/37/merge", "sha": TRUSTED}], None):
             with self.subTest(references=references):
                 api = FakeAPI()
-                api.responses[f"actions/runs/{RUN}"] = {**api.run, "referenced_workflows": references}
+                # N3: the final attempt's own references decide, never the run-level object.
+                api.responses[f"actions/runs/{RUN}/attempts/{ATTEMPT}"] = {**api.run, "referenced_workflows": references}
                 self.lines.clear()
                 self.assertRejected(api, "workflow")
+        api = FakeAPI()
+        api.responses[f"actions/runs/{RUN}"] = {**api.run, "referenced_workflows": []}
+        self.lines.clear()
+        self.assertEqual("true", self.discover(api)["reused"])
+
+    def test_final_attempt_object_must_be_this_successful_attempt(self):
+        for change in (dict(run_attempt=1), dict(id=RUN + 1), dict(conclusion="failure"), dict(event="push"),
+                       dict(head_sha="0" * 40), dict(path=".github/workflows/promote.yml")):
+            with self.subTest(change=change):
+                api = FakeAPI()
+                api.responses[f"actions/runs/{RUN}/attempts/{ATTEMPT}"] = {**api.run, **change}
+                self.lines.clear()
+                self.assertRejected(api, "attempt")
+
+    # B1 defense in depth: exact association -----------------------------------------
+
+    def sibling(self, number=38, **change):
+        entry = copy.deepcopy(FakeAPI().run["pull_requests"][0])
+        entry.update(number=number, url=f"https://api.github.com/repos/{REPO}/pulls/{number}", **change)
+        return entry
+
+    def test_sibling_pull_request_entry_is_rejected(self):
+        # PR M (38) shares N's head branch: GitHub lists both on M's run.
+        for requests in ([FakeAPI().run["pull_requests"][0], self.sibling()],
+                         [self.sibling(), FakeAPI().run["pull_requests"][0]]):
+            with self.subTest(order=[entry["number"] for entry in requests]):
+                api = FakeAPI()
+                api.responses[f"actions/runs/{RUN}"] = {**api.run, "pull_requests": requests}
+                self.lines.clear()
+                self.assertRejected(api, "association")
+
+    def test_association_entry_must_be_main_based_from_this_head_branch(self):
+        base = FakeAPI().run["pull_requests"][0]
+        evil_base = {**base["base"], "ref": "attacker-base"}
+        for entry in ({**base, "base": evil_base}, {**base, "head": {**base["head"], "ref": "other"}},
+                      {**base, "head": {**base["head"], "sha": "0" * 40}},
+                      {**base, "base": {**base["base"], "repo": pr_repository("x/y", 8)}},
+                      {**base, "head": {**base["head"], "repo": pr_repository(REPO, 8)}},
+                      {**base, "number": "37"}):
+            with self.subTest(entry=entry):
+                api = FakeAPI()
+                api.responses[f"actions/runs/{RUN}"] = {**api.run, "pull_requests": [entry]}
+                self.lines.clear()
+                self.assertRejected(api, "association")
+
+    def test_closed_sibling_run_listing_only_n_fails_its_attestation(self):
+        # M (38) ran with an attacker base and was closed; its run now lists only N.
+        # Its forged plan claims N's merge commit, but the protected signer attested
+        # M's own merge ref and commit, so nothing it uploaded is authority.
+        api = FakeAPI()
+        api.sign(plan={"number": 38, "commit": "d" * 40}, contributions={"number": 38, "commit": "d" * 40})
+        self.assertRejected(api, "attestation")
+        # With the true commit but M's merge ref, the certificate still names M.
+        self.lines.clear()
+        api = FakeAPI()
+        api.sign(plan={"number": 38}, contributions={"number": 38})
+        self.assertRejected(api, "attestation")
+
+    # B1: attestation binding ----------------------------------------------------------
+
+    def test_plan_or_contributions_without_an_attestation_are_rejected(self):
+        api = FakeAPI()
+        api.lists[f"actions/runs/{RUN}/artifacts?name={ATTESTATIONS_NAME}"] = []
+        self.assertRejected(api, "artifact-missing")
+        for members in ({"plan.bundle.jsonl": b"{}"}, {"contributions.bundle.jsonl": b"{}"},
+                        {"plan.bundle.jsonl": b"{}", "contributions.bundle.jsonl": b"{}", "x.jsonl": b"{}"}):
+            with self.subTest(members=list(members)):
+                api = FakeAPI()
+                api.sign(members=members)
+                self.lines.clear()
+                self.assertRejected(api, "artifact-content")
+        for field in ("plan", "contributions"):
+            with self.subTest(field=field):
+                api = FakeAPI()
+                # A bundle signed over other bytes (e.g. the attacker's own upload) never verifies.
+                api.sign(**{field: {"data": b"other bytes"}})
+                self.lines.clear()
+                self.assertRejected(api, "attestation")
+
+    def test_attestation_identity_fields_are_exact(self):
+        cases = {
+            "workflow ref": dict(signer=f"https://github.com/{REPO}/.github/workflows/product-validation.yml@refs/pull/38/merge"),
+            "caller workflow": dict(signer=f"https://github.com/{REPO}/.github/workflows/ci.yml@refs/pull/37/merge"),
+            "workflow sha": dict(signer_digest="8" * 40),
+            "run": dict(run=RUN + 1),
+            "attempt": dict(attempt=1),
+            "commit": dict(commit="d" * 40),
+            "event": dict(trigger="merge_group"),
+            "runner": dict(runner="self-hosted"),
+            "repository": dict(repository_uri="https://github.com/x/codex-agent"),
+            "subject name": dict(name="codex-agent-ci-plan-control-" + "2" * 40),
+        }
+        for field in ("plan", "contributions"):
+            for label, change in cases.items():
+                if label == "subject name" and field == "contributions":
+                    change = dict(name=CONTRIBUTIONS_NAME[:-1] + "1")
+                with self.subTest(field=field, case=label):
+                    api = FakeAPI()
+                    api.sign(**{field: change})
+                    self.lines.clear()
+                    self.assertRejected(api, "attestation")
+
+    def test_attestation_rows_are_pinned_exactly(self):
+        api = FakeAPI()
+        good = api.verify_attestation
+        arguments = dict(name=PLAN_NAME, digest=digest(api.archives[902]), trusted_workflow_sha=TRUSTED,
+                         validation_commit=MERGE, pull_request=PR, run_id=RUN, run_attempt=ATTEMPT)
+        with tempfile.TemporaryDirectory() as work:
+            subject, bundle = Path(work) / "plan.zip", Path(work) / "plan.bundle.jsonl"
+            subject.write_bytes(api.archives[902])
+            bundle.write_bytes(signed_bundle(PLAN_NAME, api.archives[902]))
+            rows = good(subject, bundle, signer_digest=TRUSTED, source_digest=MERGE)
+            scope.require_attested_subject(rows, **arguments)
+            mutations = (lambda r: r * 2, lambda r: [], lambda r: None,
+                         lambda r: r[0]["verificationResult"]["statement"].update(predicate_type="x"),
+                         lambda r: r[0]["verificationResult"]["statement"].update(predicateType="x"),
+                         lambda r: r[0]["verificationResult"]["statement"]["subject"].append({}),
+                         lambda r: r[0]["verificationResult"]["signature"]["certificate"].pop("buildConfigURI"),
+                         lambda r: r[0]["verificationResult"]["signature"]["certificate"].update(
+                             issuer="https://evil.invalid"),
+                         lambda r: r[0]["verificationResult"].pop("signature"))
+            for index, mutate in enumerate(mutations):
+                with self.subTest(index=index):
+                    value = copy.deepcopy(rows)
+                    value = mutate(value) if index < 3 else (mutate(value), value)[1]
+                    with self.assertRaises(scope.RetainedReuseRejected) as caught:
+                        scope.require_attested_subject(value, **arguments)
+                    self.assertEqual("attestation", caught.exception.reason)
+            for verifier in (None, object()):
+                with self.assertRaises(scope.RetainedReuseRejected) as caught:
+                    scope.verify_retained_attestation(verifier, subject, bundle, **arguments)
+                self.assertEqual("attestation", caught.exception.reason)
+
+    def test_fake_gate_job_with_the_pinned_name_is_not_authority(self):
+        # A caller ci.yml can name a job "product-validation / CI / merge-gate"; it
+        # cannot produce the protected signer's attestation over its upload.
+        api = FakeAPI()
+        path = f"actions/runs/{RUN}/attempts/{ATTEMPT}/jobs"
+        api.lists[path] = [job for job in api.lists[path] if job["name"] != scope.RETAINED_RECORD_JOB]
+        self.assertRejected(api, "jobs")
+        self.lines.clear()
+        api = FakeAPI()
+        api.lists[path].append(api.job(9, scope.RETAINED_GATE_JOB, GATE_START, GATE_END))
+        self.assertRejected(api, "jobs")
+        self.lines.clear()
+        api = FakeAPI()
+        api.sign(contributions={"signer": f"https://github.com/{REPO}/.github/workflows/ci.yml@refs/pull/37/merge"})
+        self.assertRejected(api, "attestation")
+
+    def test_signer_must_run_after_the_gate_and_upload_in_its_own_window(self):
+        path = f"actions/runs/{RUN}/attempts/{ATTEMPT}/jobs"
+        api = FakeAPI()
+        api.lists[path][3] = {**api.lists[path][3], "started_at": "2026-11-28T10:04:00Z"}
+        self.assertRejected(api, "jobs")
+        for created in ("2026-11-28T10:05:00Z", "2026-11-28T10:06:01Z"):
+            with self.subTest(created=created):
+                api = FakeAPI()
+                listing = f"actions/runs/{RUN}/artifacts?name={ATTESTATIONS_NAME}"
+                api.lists[listing] = [{**api.lists[listing][0], "created_at": created}]
+                self.lines.clear()
+                self.assertRejected(api, "artifact-window")
+
+    def test_unexpected_error_on_one_candidate_moves_to_the_next(self):
+        # N4: an unexpected exception skips only that candidate; overall still fails closed.
+        api = FakeAPI()
+        listing = next(path for path in api.lists if path.startswith("actions/workflows/"))
+        api.lists[listing].insert(0, {"id": RUN + 5, "conclusion": "success", "head_sha": HEAD})
+        api.responses[f"actions/runs/{RUN + 5}"] = RuntimeError("transient")
+        self.assertEqual("true", self.discover(api)["reused"])
+        self.assertTrue(any(line.startswith(f"[route:merge-queue-reuse:error] run {RUN + 5}: ")
+                            for line in self.lines), self.lines)
+        self.lines.clear()
+        __import__("shutil").rmtree(self.destination)
+        api = FakeAPI()
+        api.responses[f"actions/runs/{RUN}"] = RuntimeError("transient")
+        self.assertRejected(api, "error")
 
     # (b) final attempt, artifact identity, digest, content ------------------------
 
@@ -378,6 +637,7 @@ class RetainedReuseTest(unittest.TestCase):
         api.archives[901] = archive({"current-validation-contributions.json": data})
         api.lists[f"actions/runs/{RUN}/artifacts?name={CONTRIBUTIONS_NAME}"] = [
             api.artifact(901, CONTRIBUTIONS_NAME, "2026-11-28T10:03:00Z")]
+        api.sign()
         self.assertRejected(api, "artifact-content")
         with self.assertRaises(scope.RetainedReuseRejected):
             scope._strict_json(b'{"a": NaN}', "fixture")
@@ -515,7 +775,7 @@ class RetainedReuseTest(unittest.TestCase):
 
     def verify(self, bundle, **overrides):
         arguments = dict(repository_root=ROOT, environ=ENVIRON, trusted_workflow_sha=TRUSTED,
-                         source_run_id=RUN, source_run_attempt=ATTEMPT)
+                         verifier=FakeAPI(), source_run_id=RUN, source_run_attempt=ATTEMPT)
         arguments.update(overrides)
         return scope.verify_retained_bundle(bundle, self.plan_path, **arguments)
 
@@ -534,9 +794,35 @@ class RetainedReuseTest(unittest.TestCase):
             self.verify(bundle)
         self.assertEqual("bundle", caught.exception.reason)
         contributions.write_bytes(original)
+        # A consistent swap of archive, file and pointer still lacks a valid attestation.
+        for name in ("current-validation-contributions.zip", "current-validation-contributions.bundle.jsonl"):
+            with self.subTest(name=name):
+                path = bundle / name
+                saved = path.read_bytes()
+                path.write_bytes(saved + b" ")
+                with self.assertRaises(scope.RetainedReuseRejected) as caught:
+                    self.verify(bundle)
+                self.assertEqual("bundle", caught.exception.reason)
+                path.write_bytes(saved)
+        with self.assertRaises(scope.RetainedReuseRejected) as caught:
+            self.verify(bundle, verifier=None)
+        self.assertEqual("attestation", caught.exception.reason)
         (bundle / "validation-receipt.json").write_text("{}")
         with self.assertRaises(scope.RetainedReuseRejected):
             self.verify(bundle)
+
+    def test_bundle_reverification_reruns_the_native_attestation(self):
+        bundle = self.staged()
+        pointer_path = bundle / "source.json"
+        pointer = json.loads(pointer_path.read_text())
+        # Re-signing bytes for another PR's merge ref, recorded consistently, still fails.
+        forged = signed_bundle(PLAN_NAME, (bundle / "source-impact-plan.zip").read_bytes(), number=38)
+        (bundle / "source-impact-plan.bundle.jsonl").write_bytes(forged)
+        pointer["plan"]["bundleSha256"] = digest(forged)
+        pointer_path.write_text(json.dumps(pointer))
+        with self.assertRaises(scope.RetainedReuseRejected) as caught:
+            self.verify(bundle)
+        self.assertEqual("attestation", caught.exception.reason)
 
     def test_stage_requires_a_merge_group_runner_and_fresh_destination(self):
         bundle = self.staged()
@@ -544,8 +830,14 @@ class RetainedReuseTest(unittest.TestCase):
         with self.assertRaises(scope.RetainedReuseRejected):
             scope.stage_merge_group_retained_validation(bundle, self.plan_path, staged, repository_root=ROOT,
                 environ={**ENVIRON, "GITHUB_EVENT_NAME": "pull_request"}, trusted_workflow_sha=TRUSTED,
-                source_run_id=RUN, source_run_attempt=ATTEMPT)
+                source_run_id=RUN, source_run_attempt=ATTEMPT, verifier=FakeAPI())
         staged.mkdir()
+        with self.assertRaises(scope.RetainedReuseRejected):
+            scope.stage_merge_group_retained_validation(bundle, self.plan_path, staged, repository_root=ROOT,
+                environ=ENVIRON, trusted_workflow_sha=TRUSTED, source_run_id=RUN, source_run_attempt=ATTEMPT,
+                verifier=FakeAPI())
+        staged.rmdir()
+        # Without an injected verifier the gate uses native gh with its token; none means no reuse.
         with self.assertRaises(scope.RetainedReuseRejected):
             scope.stage_merge_group_retained_validation(bundle, self.plan_path, staged, repository_root=ROOT,
                 environ=ENVIRON, trusted_workflow_sha=TRUSTED, source_run_id=RUN, source_run_attempt=ATTEMPT)
@@ -575,6 +867,34 @@ class RetainedReuseTest(unittest.TestCase):
         with mock.patch("reuse.api_json", return_value={}) as api_json:
             reads.json(f"pulls/{PR}")
         api_json.assert_called_once_with(f"https://api.github.com/repos/{REPO}/pulls/{PR}", "token")
+
+    def test_native_attestation_verification_pins_signer_source_and_issuer(self):
+        import subprocess
+        reads = scope.GitHubReads("secret-token")
+        completed = subprocess.CompletedProcess([], 0, stdout=b"[]", stderr=b"")
+        with mock.patch("subprocess.run", return_value=completed) as run:
+            self.assertEqual([], reads.verify_attestation("/w/a.zip", "/w/a.bundle.jsonl",
+                                                          signer_digest=TRUSTED, source_digest=MERGE))
+        command = run.call_args.args[0]
+        self.assertEqual(["gh", "attestation", "verify", "/w/a.zip", "--bundle", "/w/a.bundle.jsonl",
+                          "--repo", REPO, "--signer-workflow", f"{REPO}/.github/workflows/product-validation.yml",
+                          "--signer-digest", TRUSTED, "--source-digest", MERGE,
+                          "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
+                          "--deny-self-hosted-runners", "--format", "json"], command)
+        self.assertNotIn("secret-token", " ".join(command))
+        self.assertEqual("secret-token", run.call_args.kwargs["env"]["GH_TOKEN"])
+        with self.assertRaises(ValueError):
+            reads.verify_attestation("/w/a.zip", "/w/b", signer_digest="x", source_digest=MERGE)
+        startup = subprocess.CompletedProcess([], 1, stdout=b"", stderr=scope._SIGSTORE_STARTUP[0])
+        invalid = subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"verification failed")
+        with mock.patch("subprocess.run", side_effect=[startup, completed]) as run, mock.patch("time.sleep"):
+            self.assertEqual([], reads.verify_attestation("/w/a.zip", "/w/b", signer_digest=TRUSTED,
+                                                          source_digest=MERGE))
+        self.assertEqual(2, run.call_count)
+        with mock.patch("subprocess.run", side_effect=[invalid, completed]) as run, mock.patch("time.sleep"):
+            with self.assertRaises(ValueError):
+                reads.verify_attestation("/w/a.zip", "/w/b", signer_digest=TRUSTED, source_digest=MERGE)
+        self.assertEqual(1, run.call_count)
 
 
 class RetainedReuseWorkflowTest(unittest.TestCase):
@@ -677,9 +997,15 @@ class RetainedReuseWorkflowTest(unittest.TestCase):
         upload = self.gate.split("name: codex-agent-ci-validation-${{ needs.plan.outputs.validation_tree }}", 1)[0]
         conditions.append(re.findall(r"^        if: (.+)$", upload, re.M)[-1])
         for condition in conditions:
-            self.assertTrue(condition.endswith("&& needs.plan.outputs.validation_reuse_kind != 'retained' }}"))
+            # N1: the same three-part retained decision as the re-verify steps.
+            self.assertTrue(condition.endswith(
+                "&& !(github.event_name == 'merge_group' && needs.plan.outputs.validation_reused == 'true' "
+                "&& needs.plan.outputs.validation_reuse_kind == 'retained') }}"))
             self.assertFalse(self.evaluate(condition, self.values(event="merge_group", reused="true",
                                                                   kind="retained")))
+            # Inconsistent combinations keep the schema-1 path (and the consistency step fails the gate).
+            for event, reused in (("pull_request", "true"), ("merge_group", "false")):
+                self.assertTrue(self.evaluate(condition, self.values(event=event, reused=reused, kind="retained")))
             # Legacy identical-tree reuse and fresh full validation keep the schema-1 path.
             self.assertTrue(self.evaluate(condition, self.values(event="merge_group", reused="true", kind="")))
             self.assertTrue(self.evaluate(condition, self.values(event="pull_request", reused="false", kind="")))
@@ -701,13 +1027,140 @@ class RetainedReuseWorkflowTest(unittest.TestCase):
         self.assertIn("TRUSTED_WORKFLOW_SHA: ${{ needs.plan.outputs.publisher_sha }}", verify)
         self.assertIn("SOURCE_RUN_ID: ${{ needs.plan.outputs.validation_source_run_id }}", verify)
         self.assertIn("SOURCE_RUN_ATTEMPT: ${{ needs.plan.outputs.validation_source_run_attempt }}", verify)
-        self.assertIn("name: codex-agent-merge-group-retained-validation-${{ needs.plan.outputs.validation_tree }}",
-                      upload)
+        # N2: a gate re-run uploads under its own attempt, never colliding with overwrite: false.
+        self.assertIn("name: codex-agent-merge-group-retained-validation-${{ needs.plan.outputs.validation_tree }}"
+                      "-attempt-${{ github.run_attempt }}\n", upload)
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", verify)
+        self.assertIn("bash .github/actions/restore-reuse-qualification/install-gh.sh",
+                      self.step(self.gate, "      - id: retained-native-gh\n"))
         self.assertIn("overwrite: false", upload)
         self.assertNotIn("codex-agent-ci-validation-", verify + upload)
         self.assertLess(self.gate.index(verify_marker), self.gate.index(upload_marker))
         self.assertLess(self.gate.index("      - if: ${{ !inputs.fullReuseAcceptanceOnly }}\n"
                                         "        uses: actions/download-artifact@"), self.gate.index(verify_marker))
+
+    def run_consistency(self, event, reused, kind):
+        import subprocess
+        step = self.step(self.gate, "      - name: Require a consistent merge-group retained reuse decision\n")
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        return subprocess.run(["bash", "-c", script], env={"PATH": os.environ["PATH"], "GITHUB_EVENT_NAME": event,
+                              "REUSED": reused, "KIND": kind}, capture_output=True, text=True).returncode
+
+    def test_inconsistent_retained_reuse_decision_fails_the_gate(self):
+        # Right after the readiness gate and before any schema-1 or retained step acts.
+        self.assertLess(self.gate.index("Require readiness and successful prerequisites"),
+                        self.gate.index("Require a consistent merge-group retained reuse decision"))
+        self.assertLess(self.gate.index("Require a consistent merge-group retained reuse decision"),
+                        self.gate.index("Require an exact receipt set"))
+        for event, reused, kind, expected in (
+                ("merge_group", "true", "retained", 0), ("merge_group", "true", "", 0),
+                ("merge_group", "false", "", 0), ("pull_request", "false", "", 0), ("pull_request", "true", "", 0),
+                ("merge_group", "false", "retained", 1), ("merge_group", "", "retained", 1),
+                ("pull_request", "true", "retained", 1), ("merge_group", "true", "schema-1", 1),
+                ("merge_group", "true", "retained\n", 1)):
+            with self.subTest(event=event, reused=reused, kind=kind):
+                self.assertEqual(expected, 0 if self.run_consistency(event, reused, kind) == 0 else 1)
+
+    def test_plan_installs_native_gh_only_for_merge_group_reuse(self):
+        step = self.step(self.plan, "      - id: retained-native-gh\n")
+        self.assertIn("github.event_name == 'merge_group'", step)
+        self.assertIn("continue-on-error: true", step)
+        self.assertLess(self.plan.index("- id: retained-native-gh"), self.plan.index("- id: validation-reuse"))
+        self.assertIn("plan_control_digest: ${{ steps.upload_plan_control.outputs.artifact-digest }}", self.plan)
+        self.assertIn("retained_contributions_digest: ${{ steps.upload_retained_contributions.outputs.artifact-digest }}",
+                      self.gate.split("\n    steps:\n", 1)[0])
+
+
+class RetainedValidationSignerTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        workflow = (ROOT / ".github/workflows/product-validation.yml").read_text()
+        assert workflow.count("\n  retained-validation-record:\n") == 1
+        cls.workflow = workflow
+        cls.signer = re.split(r"\n  [a-z][a-z0-9-]*:\n",
+                              workflow.split("\n  retained-validation-record:\n", 1)[1])[0]
+
+    def test_signer_never_executes_the_tested_tree(self):
+        signer = self.signer
+        self.assertIn("    permissions:\n      actions: read\n      contents: read\n"
+                      "      id-token: write\n      attestations: write\n", signer)
+        for forbidden in ("actions/checkout", "actions/cache", "uses: ./", "secrets.", "PYTHONPATH",
+                          "working-directory", "sys.path", "ci/", "download-artifact"):
+            self.assertNotIn(forbidden, signer)
+        uses = [line.strip() for line in signer.splitlines() if line.strip().startswith("uses:")]
+        self.assertEqual(["uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2"] * 2
+                         + ["uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1"], uses)
+        self.assertIn("python3 -I -B - <<'PY'", signer)
+        self.assertIn("    needs: [plan, merge-gate]\n", signer)
+        steps = signer.split("\n      - ")[1:]
+        # Publication never decides a result: only the never-failing decision step lacks continue-on-error.
+        self.assertEqual(len(steps) - 1, signer.count("continue-on-error: true"))
+        self.assertEqual(2, signer.count("create-storage-record: false"))
+        # Nothing waits on the signer.
+        self.assertNotIn("needs.retained-validation-record", self.workflow)
+        self.assertFalse(re.search(r"needs: \[[^\]]*retained-validation-record", self.workflow))
+
+    def test_signer_signs_only_api_confirmed_digests_of_a_protected_pr_publication(self):
+        signer = self.signer
+        self.assertIn("github.event_name == 'pull_request'", signer)
+        self.assertIn("needs.merge-gate.result == 'success'", signer)
+        for line in ("PLAN_DIGEST: ${{ needs.plan.outputs.plan_control_digest }}",
+                     "CONTRIBUTIONS_DIGEST: ${{ needs.merge-gate.outputs.retained_contributions_digest }}",
+                     "NATIVE_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}",
+                     "subject-name: ${{ steps.publication.outputs.plan_name }}",
+                     "subject-digest: sha256:${{ steps.publication.outputs.plan_digest }}",
+                     "subject-name: ${{ steps.publication.outputs.contributions_name }}",
+                     "subject-digest: sha256:${{ steps.publication.outputs.contributions_digest }}",
+                     "name: codex-agent-retained-validation-attestations-${{ steps.publication.outputs.tree }}"
+                     "-attempt-${{ steps.publication.outputs.attempt }}"):
+            self.assertIn(line, signer)
+        self.assertEqual(scope.retained_attestations_name(TREE, ATTEMPT), ATTESTATIONS_NAME)
+        self.assertEqual(scope.RETAINED_RECORD_JOB, "product-validation / retained-validation-record")
+
+    def run_publication(self, **overrides):
+        script = textwrap.dedent(self.signer.split("python3 -I -B - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
+        tree, plan_digest, contributions_digest = TREE, "a" * 64, "b" * 64
+        environ = dict(PUBLISHER_SHA=TRUSTED, NATIVE_WORKFLOW_SHA=TRUSTED, NATIVE_WORKFLOW_REPOSITORY=REPO,
+                       NATIVE_WORKFLOW_PATH=".github/workflows/product-validation.yml", FORK="false", TREE=tree,
+                       PLAN_DIGEST=plan_digest, CONTRIBUTIONS_DIGEST=contributions_digest, GITHUB_TOKEN="t",
+                       GITHUB_REPOSITORY=REPO, GITHUB_EVENT_NAME="pull_request", GITHUB_RUN_ATTEMPT=str(ATTEMPT),
+                       GITHUB_RUN_ID=str(RUN))
+        listed = overrides.pop("listed", None)
+        environ.update(overrides)
+
+        def respond(request, timeout):
+            name = request.full_url.split("name=", 1)[1]
+            value = "sha256:" + (plan_digest if "plan-control" in name else contributions_digest)
+            items = listed(name, value) if listed else [
+                {"name": name, "digest": value, "expired": False, "workflow_run": {"id": RUN}}]
+            return io.BytesIO(json.dumps({"artifacts": items}).encode())
+
+        with tempfile.TemporaryDirectory() as scratch:
+            output = Path(scratch) / "output"
+            environ["GITHUB_OUTPUT"] = str(output)
+            with mock.patch.dict(os.environ, environ, clear=True), \
+                    mock.patch("urllib.request.urlopen", side_effect=respond):
+                exec(compile(script, "<publication>", "exec"), {"__name__": "__main__"})
+            return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+    def test_publication_decision_is_exact_and_never_fails(self):
+        outputs = self.run_publication()
+        self.assertEqual({"publish": "true", "plan_name": PLAN_NAME, "plan_digest": "a" * 64,
+                          "contributions_name": CONTRIBUTIONS_NAME, "contributions_digest": "b" * 64,
+                          "tree": TREE, "attempt": str(ATTEMPT)}, outputs)
+        for overrides in (dict(NATIVE_WORKFLOW_SHA="8" * 40), dict(FORK="true"), dict(GITHUB_EVENT_NAME="merge_group"),
+                          dict(NATIVE_WORKFLOW_PATH=".github/workflows/ci.yml"), dict(GITHUB_REPOSITORY="x/y"),
+                          dict(PLAN_DIGEST=""), dict(CONTRIBUTIONS_DIGEST="sha256:" + "b" * 64),
+                          dict(TREE="1" * 39 + "\n"), dict(GITHUB_RUN_ATTEMPT="0"),
+                          dict(listed=lambda name, value: []),
+                          dict(listed=lambda name, value: [{"name": name, "digest": "sha256:" + "c" * 64,
+                                                            "expired": False, "workflow_run": {"id": RUN}}]),
+                          dict(listed=lambda name, value: [{"name": name, "digest": value, "expired": False,
+                                                            "workflow_run": {"id": RUN + 1}}]),
+                          dict(listed=lambda name, value: [{"name": name, "digest": value, "expired": False,
+                                                            "workflow_run": {"id": RUN}}] * 2)):
+            with self.subTest(overrides=list(overrides)):
+                self.assertEqual({"publish": "false"}, self.run_publication(**overrides))
 
 
 if __name__ == "__main__":

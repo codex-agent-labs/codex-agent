@@ -619,6 +619,16 @@ def admit(producer: Mapping[str, Any], observation: Mapping[str, Any],
 # never relabels them as schema-1 lane provenance: the merge gate publishes a
 # distinct ``codex-agent-merge-group-retained-validation-<tree>`` artifact.
 # Every check below is exact; any doubt returns ``reused=false`` (full path).
+#
+# Authority (B1): run metadata alone cannot say which workflow wrote an
+# artifact, because ``pull_requests`` lists every open PR sharing a head branch
+# and any PR may run its own base's ci.yml. Both reused artifacts are therefore
+# accepted only with a GitHub artifact attestation signed by the protected
+# ``retained-validation-record`` job of product-validation.yml@reuse-authority at
+# the trusted publisher SHA, for this exact run attempt, on ``pull_request`` of
+# ``refs/pull/<N>/merge`` at the tested merge commit whose tree is the merge
+# group's. That signer executes no tested-tree code; it only signs the exact
+# zip digests the trusted plan job and merge gate uploaded.
 
 RETAINED_KIND = "retained"
 RETAINED_SOURCE_KIND = "merge-group-retained-validation-source"
@@ -626,6 +636,11 @@ RETAINED_GATE_JOB = "product-validation / CI / merge-gate"
 RETAINED_OUTER_GATE_JOB = "CI / merge-gate"
 PRODUCT_VALIDATION_REFERENCE = f"{REPOSITORY}/.github/workflows/product-validation.yml@reuse-authority"
 REUSE_AUTHORITY_REF = "refs/heads/reuse-authority"
+RETAINED_RECORD_JOB = "product-validation / retained-validation-record"
+PRODUCT_VALIDATION_SIGNER = (f"https://github.com/{REPOSITORY}/.github/workflows/product-validation.yml"
+                             f"@{REUSE_AUTHORITY_REF}")
+ATTESTATION_ISSUER = "https://token.actions.githubusercontent.com"
+SLSA_PROVENANCE = "https://slsa.dev/provenance/v1"
 GITHUB_API = "https://api.github.com"
 RETAINED_PLAN_KEYS = frozenset({
     "schemaVersion", "event", "repository", "pullRequest", "baseCommit", "headCommit",
@@ -640,8 +655,22 @@ _CONTRIBUTIONS_FILE = "current-validation-contributions.json"
 _PLAN_FILE = "impact-plan.json"
 _SOURCE_PLAN_FILE = "source-impact-plan.json"
 _SOURCE_FILE = "source.json"
-_BUNDLE_FILES = frozenset({_SOURCE_PLAN_FILE, _CONTRIBUTIONS_FILE, _SOURCE_FILE})
-_ARTIFACT_LIMITS = {"contributions": 64 << 20, "plan": 16 << 20}
+# field -> (extracted file, its exact artifact zip, that zip's attestation bundle)
+_SUBJECTS = {
+    "plan": (_SOURCE_PLAN_FILE, "source-impact-plan.zip", "source-impact-plan.bundle.jsonl"),
+    "contributions": (_CONTRIBUTIONS_FILE, "current-validation-contributions.zip",
+                      "current-validation-contributions.bundle.jsonl"),
+}
+# Members of the signer job's attestation artifact.
+_ATTESTATION_MEMBERS = {"plan": "plan.bundle.jsonl", "contributions": "contributions.bundle.jsonl"}
+_BUNDLE_FILES = frozenset({_SOURCE_FILE, *(name for row in _SUBJECTS.values() for name in row)})
+_ARTIFACT_LIMITS = {"contributions": 64 << 20, "plan": 16 << 20, "attestations": 1 << 20}
+_POINTER_KEYS = frozenset({
+    "schemaVersion", "kind", "repository", "pullRequest", "runId", "runAttempt", "headSha",
+    "trustedWorkflowSha", "validationCommit", "validationTree", "gateJobId", "outerGateJobId",
+    "recordJobId", "contributions", "plan", "attestations"})
+_SIGSTORE_STARTUP = (b"public good verifier is not available (initialization may have failed)",
+                     b"error creating Sigstore verifier: no valid Sigstore verifiers could be initialized")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _DECIMAL = re.compile(r"[1-9][0-9]{0,19}")
 _OUTPUT_VALUE = re.compile(r"[A-Za-z0-9._-]{1,200}")
@@ -651,7 +680,7 @@ RETAINED_REASONS = frozenset({
     "not-merge-group", "consumer", "plan", "pull-request", "no-candidate", "run", "fork", "attempt",
     "workflow", "association", "jobs", "artifact-missing", "artifact-expired", "artifact-identity",
     "artifact-digest", "artifact-window", "artifact-content", "tree", "plan-hash", "contributions",
-    "bundle", "error",
+    "bundle", "attestation", "error",
 })
 
 
@@ -686,6 +715,78 @@ def write_step_outputs(path: Any, values: Mapping[str, Any]) -> None:
 
 def retained_contributions_name(tree: str, attempt: int) -> str:
     return f"codex-agent-current-validation-contributions-{_oid(tree, 'Validation tree')}-attempt-{_positive(attempt, 'Run attempt')}"
+
+
+def retained_attestations_name(tree: str, attempt: int) -> str:
+    return f"codex-agent-retained-validation-attestations-{_oid(tree, 'Validation tree')}-attempt-{_positive(attempt, 'Run attempt')}"
+
+
+def require_attested_subject(rows: Any, *, name: str, digest: str, trusted_workflow_sha: str,
+                             validation_commit: str, pull_request: int, run_id: int, run_attempt: int) -> None:
+    """One verified SLSA statement binds this exact artifact to the protected signer.
+
+    ``rows`` is ``gh attestation verify --format json`` output, already
+    cryptographically verified; every identity field is pinned exactly here.
+    """
+    def reject(detail: str):
+        raise RetainedReuseRejected("attestation", f"{name}: {detail}")
+
+    if not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None:
+        reject("artifact digest is not exact")
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        reject("verification must return exactly one statement")
+    result = rows[0].get("verificationResult")
+    statement = result.get("statement") if isinstance(result, dict) else None
+    signature = result.get("signature") if isinstance(result, dict) else None
+    certificate = signature.get("certificate") if isinstance(signature, dict) else None
+    if not isinstance(statement, dict) or not isinstance(certificate, dict):
+        reject("verification lacks its statement or certificate")
+    if statement.get("subject") != [{"name": name, "digest": {"sha256": digest.removeprefix("sha256:")}}]:
+        reject("statement subject is not exactly this artifact")
+    predicate_types = [statement[key] for key in ("predicate_type", "predicateType") if key in statement]
+    if predicate_types != [SLSA_PROVENANCE]:
+        reject("statement is not SLSA provenance")
+    merge_ref = f"refs/pull/{_positive(pull_request, 'Pull request')}/merge"
+    repository = f"https://github.com/{REPOSITORY}"
+    commit = _oid(validation_commit, "Validation commit")
+    expected = {
+        "issuer": ATTESTATION_ISSUER,
+        "subjectAlternativeName": PRODUCT_VALIDATION_SIGNER, "buildSignerURI": PRODUCT_VALIDATION_SIGNER,
+        "buildSignerDigest": _oid(trusted_workflow_sha, "Trusted workflow SHA"),
+        "runnerEnvironment": "github-hosted",
+        "githubWorkflowTrigger": "pull_request", "buildTrigger": "pull_request",
+        "githubWorkflowSHA": commit, "githubWorkflowRef": merge_ref,
+        "sourceRepositoryURI": repository, "sourceRepositoryDigest": commit, "sourceRepositoryRef": merge_ref,
+        "buildConfigURI": f"{repository}/.github/workflows/ci.yml@{merge_ref}", "buildConfigDigest": commit,
+        "runInvocationURI": (f"{repository}/actions/runs/{_positive(run_id, 'Run ID')}"
+                             f"/attempts/{_positive(run_attempt, 'Run attempt')}"),
+    }
+    for field, value in expected.items():
+        if certificate.get(field) != value:
+            reject(f"certificate {field} is not the protected signer of this PR attempt")
+
+
+def verify_retained_attestation(verifier: Any, archive: Any, bundle: Any, *, name: str, digest: str,
+                                trusted_workflow_sha: str, validation_commit: str, pull_request: int,
+                                run_id: int, run_attempt: int) -> None:
+    """Natively verify one artifact zip against its bundle, then pin every identity field."""
+    from pathlib import Path
+    archive, bundle = Path(archive), Path(bundle)
+    if _digest(archive.read_bytes()) != digest:
+        raise RetainedReuseRejected("artifact-digest", f"{name} archive differs from its attested digest")
+    if verifier is None or not callable(getattr(verifier, "verify_attestation", None)):
+        raise RetainedReuseRejected("attestation", f"{name}: no native attestation verifier")
+    try:
+        rows = verifier.verify_attestation(archive, bundle, signer_digest=trusted_workflow_sha,
+                                           source_digest=validation_commit)
+    except RetainedReuseRejected:
+        raise
+    except Exception as error:
+        raise RetainedReuseRejected("attestation", f"{name} has no valid attestation: "
+                                                   f"{type(error).__name__}: {error}") from error
+    require_attested_subject(rows, name=name, digest=digest, trusted_workflow_sha=trusted_workflow_sha,
+                             validation_commit=validation_commit, pull_request=pull_request,
+                             run_id=run_id, run_attempt=run_attempt)
 
 
 def _digest(raw: bytes) -> str:
@@ -789,32 +890,66 @@ def require_retained_contributions(contributions: Mapping[str, Any], *, source_p
         raise RetainedReuseRejected("contributions", "Retained contributions lane receipts are malformed")
 
 
-def _require_window(job: Mapping[str, Any], artifact: Mapping[str, Any]) -> None:
+def _require_window(job: Mapping[str, Any], artifact: Mapping[str, Any], label: str = "Retained contributions",
+                    gate: str = "final merge gate") -> None:
     try:
         started, created, completed = (_timestamp(value, label) for value, label in (
-            (job.get("started_at"), "Gate start"), (artifact.get("created_at"), "Artifact"),
-            (job.get("completed_at"), "Gate completion")))
+            (job.get("started_at"), "Job start"), (artifact.get("created_at"), "Artifact"),
+            (job.get("completed_at"), "Job completion")))
     except ScopeRejected as error:
         raise RetainedReuseRejected("artifact-window", str(error)) from error
     if not started <= created <= completed:
-        raise RetainedReuseRejected("artifact-window", "Retained contributions were not uploaded by the final merge gate")
+        raise RetainedReuseRejected("artifact-window", f"{label} were not uploaded by the {gate}")
 
 
 def _gate_jobs(jobs: Any, run: Mapping[str, Any], attempt: int) -> dict[str, Mapping[str, Any]]:
+    """The final attempt's gates and protected signer, each succeeded exactly once.
+
+    Names alone are not authority (a caller workflow could reuse a display
+    name); the signer's attestation binds the reusable workflow. Names here only
+    tie artifact upload windows to the jobs that must have produced them.
+    """
     if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
         raise RetainedReuseRejected("jobs", "Source run jobs are malformed")
     selected = {}
-    for name in (RETAINED_GATE_JOB, RETAINED_OUTER_GATE_JOB):
+    for name in (RETAINED_GATE_JOB, RETAINED_OUTER_GATE_JOB, RETAINED_RECORD_JOB):
         matches = [job for job in jobs if job.get("name") == name]
         if len(matches) != 1:
-            raise RetainedReuseRejected("jobs", f"Source gate {name} is missing or ambiguous")
+            raise RetainedReuseRejected("jobs", f"Source job {name} is missing or ambiguous")
         job = matches[0]
         if (type(job.get("id")) is not int or job.get("run_id") != run["id"] or job.get("run_attempt") != attempt
                 or job.get("head_sha") != run["head_sha"]
                 or job.get("status") != "completed" or job.get("conclusion") != "success"):
-            raise RetainedReuseRejected("jobs", f"Source gate {name} did not succeed in the final attempt")
+            raise RetainedReuseRejected("jobs", f"Source job {name} did not succeed in the final attempt")
         selected[name] = job
+    try:
+        gate_completed = _timestamp(selected[RETAINED_GATE_JOB].get("completed_at"), "Gate completion")
+        record_started = _timestamp(selected[RETAINED_RECORD_JOB].get("started_at"), "Signer start")
+    except ScopeRejected as error:
+        raise RetainedReuseRejected("jobs", str(error)) from error
+    if record_started < gate_completed:
+        raise RetainedReuseRejected("jobs", "Source signer started before its merge gate completed")
     return selected
+
+
+def _require_sole_association(run: Mapping[str, Any], pull: Mapping[str, Any], number: int) -> None:
+    """``pull_requests`` must be exactly [this PR, based on main, from this head branch]."""
+    entries = run.get("pull_requests")
+    repository = run.get("repository")
+    repository_id = repository.get("id") if isinstance(repository, dict) else None
+    if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
+        raise RetainedReuseRejected("association", "Source run must list exactly this one pull request")
+    entry = entries[0]
+    base, branch = entry.get("base"), entry.get("head")
+    url = f"{GITHUB_API}/repos/{REPOSITORY}"
+    if (type(number) is not int or entry.get("number") != number or type(entry.get("number")) is not int
+            or type(repository_id) is not int or not isinstance(base, dict) or not isinstance(branch, dict)
+            or base.get("ref") != "main" or pull.get("base", {}).get("ref") != "main"
+            or branch.get("ref") != run.get("head_branch") or branch.get("ref") != pull["head"].get("ref")
+            or branch.get("sha") != run.get("head_sha")
+            or any(not isinstance(side.get("repo"), dict) or side["repo"].get("url") != url
+                   or side["repo"].get("id") != repository_id for side in (base, branch))):
+        raise RetainedReuseRejected("association", "Source run is not exactly this main-based pull request")
 
 
 def _run_artifact(api: Any, run: Mapping[str, Any], name: str, limit: int) -> dict[str, Any]:
@@ -847,10 +982,26 @@ def _run_artifact(api: Any, run: Mapping[str, Any], name: str, limit: int) -> di
     return artifact
 
 
-def _single_file(api: Any, artifact: Mapping[str, Any], filename: str, limit: int, work: Any) -> bytes:
-    """Download the exact digest and extract exactly one regular root file."""
+def _extract_exact(archive: Any, extracted: Any, filenames: Iterable[str], label: str) -> dict[str, bytes]:
+    """Safely extract an archive holding exactly ``filenames`` as regular root files."""
     from pathlib import Path
     from receipt import safe_extract
+    archive, extracted, filenames = Path(archive), Path(extracted), frozenset(filenames)
+    try:
+        safe_extract(archive, extracted)
+    except (OSError, ValueError) as error:
+        raise RetainedReuseRejected("artifact-content", f"{label} is not a safe archive") from error
+    entries = list(extracted.iterdir())
+    if ({entry.name for entry in entries} != filenames or len(entries) != len(filenames)
+            or any(entry.is_symlink() or not entry.is_file() for entry in entries)):
+        raise RetainedReuseRejected("artifact-content", f"{label} must hold exactly {sorted(filenames)}")
+    return {entry.name: entry.read_bytes() for entry in entries}
+
+
+def _artifact_files(api: Any, artifact: Mapping[str, Any], filenames: Iterable[str], limit: int,
+                    work: Any) -> tuple[dict[str, bytes], bytes]:
+    """Download the exact digest; return its exact members and the archive bytes."""
+    from pathlib import Path
     work = Path(work)
     archive, extracted = work / f"{artifact['id']}.zip", work / str(artifact["id"])
     try:
@@ -860,14 +1011,7 @@ def _single_file(api: Any, artifact: Mapping[str, Any], filename: str, limit: in
     raw = archive.read_bytes()
     if _digest(raw) != artifact["digest"] or len(raw) != artifact["size_in_bytes"]:
         raise RetainedReuseRejected("artifact-digest", f"{artifact['name']} differs from its API digest")
-    try:
-        safe_extract(archive, extracted)
-    except (OSError, ValueError) as error:
-        raise RetainedReuseRejected("artifact-content", f"{artifact['name']} is not a safe archive") from error
-    entries = list(extracted.iterdir())
-    if (len(entries) != 1 or entries[0].name != filename or entries[0].is_symlink() or not entries[0].is_file()):
-        raise RetainedReuseRejected("artifact-content", f"{artifact['name']} must hold exactly {filename}")
-    return entries[0].read_bytes()
+    return _extract_exact(archive, extracted, filenames, artifact["name"]), raw
 
 
 def _require_reference(run: Mapping[str, Any], trusted_workflow_sha: str) -> None:
@@ -881,9 +1025,21 @@ def _require_reference(run: Mapping[str, Any], trusted_workflow_sha: str) -> Non
         raise RetainedReuseRejected("workflow", "Source run did not use the current reviewed product workflow")
 
 
+def _final_attempt(api: Any, run: Mapping[str, Any], attempt: int, trusted_workflow_sha: str) -> None:
+    """The final attempt itself (not the run-level object) used the reviewed workflow."""
+    final = api.json(f"actions/runs/{run['id']}/attempts/{attempt}")
+    if (not isinstance(final, dict) or final.get("id") != run["id"] or final.get("run_attempt") != attempt
+            or final.get("head_sha") != run["head_sha"] or final.get("path") != CI_WORKFLOW
+            or final.get("event") != "pull_request" or final.get("status") != "completed"
+            or final.get("conclusion") != "success"):
+        raise RetainedReuseRejected("attempt", "Source final attempt is not this successful pull_request attempt")
+    _require_reference(final, trusted_workflow_sha)
+
+
 def observe_retained_pr_validation(current: Mapping[str, Any], run: Any, pull: Mapping[str, Any], *, api: Any,
                                    repository_root: Any, trusted_workflow_sha: str, work: Any) -> dict[str, Any]:
     """Verify one candidate PR run online; return the exact bundle it proves."""
+    from pathlib import Path
     if not isinstance(run, dict) or type(run.get("id")) is not int or run["id"] < 1:
         raise RetainedReuseRejected("run", "Source run is malformed")
     if (run.get("path") != CI_WORKFLOW or run.get("event") != "pull_request"
@@ -898,23 +1054,46 @@ def observe_retained_pr_validation(current: Mapping[str, Any], run: Any, pull: M
     if not isinstance(head, str) or _OID.fullmatch(head) is None or head != pull["head"]["sha"]:
         raise RetainedReuseRejected("run", "Source run did not test the pull request's current head")
     number = current["pullRequest"]
-    if len([item for item in run.get("pull_requests") or () if isinstance(item, dict)
-            and item.get("number") == number]) != 1:
-        raise RetainedReuseRejected("association", "Source run lacks one live association with the pull request")
-    _require_reference(run, trusted_workflow_sha)
+    _require_sole_association(run, pull, number)
+    _final_attempt(api, run, attempt, trusted_workflow_sha)
     tree = current["validationTree"]
-    contributions_artifact = _run_artifact(api, run, retained_contributions_name(tree, attempt),
-                                           _ARTIFACT_LIMITS["contributions"])
-    plan_artifact = _run_artifact(api, run, f"codex-agent-ci-plan-control-{tree}", _ARTIFACT_LIMITS["plan"])
+    artifacts = {
+        "contributions": _run_artifact(api, run, retained_contributions_name(tree, attempt),
+                                       _ARTIFACT_LIMITS["contributions"]),
+        "plan": _run_artifact(api, run, f"codex-agent-ci-plan-control-{tree}", _ARTIFACT_LIMITS["plan"]),
+        "attestations": _run_artifact(api, run, retained_attestations_name(tree, attempt),
+                                      _ARTIFACT_LIMITS["attestations"]),
+    }
     jobs = _gate_jobs(api.items(f"actions/runs/{run['id']}/attempts/{attempt}/jobs", "jobs"), run, attempt)
-    _require_window(jobs[RETAINED_GATE_JOB], contributions_artifact)
-    source_raw = _single_file(api, plan_artifact, _PLAN_FILE, _ARTIFACT_LIMITS["plan"], work)
-    contributions_raw = _single_file(api, contributions_artifact, _CONTRIBUTIONS_FILE,
-                                     _ARTIFACT_LIMITS["contributions"], work)
+    _require_window(jobs[RETAINED_GATE_JOB], artifacts["contributions"])
+    _require_window(jobs[RETAINED_RECORD_JOB], artifacts["attestations"], "Retained attestations",
+                    "final protected signer")
+    files: dict[str, bytes] = {}
+    for field in ("plan", "contributions"):
+        filename, archive_name, _ = _SUBJECTS[field]
+        members, archive = _artifact_files(api, artifacts[field], (_PLAN_FILE if field == "plan" else filename,),
+                                           _ARTIFACT_LIMITS[field], work)
+        files[filename], files[archive_name] = next(iter(members.values())), archive
+    signed, _ = _artifact_files(api, artifacts["attestations"], _ATTESTATION_MEMBERS.values(),
+                                _ARTIFACT_LIMITS["attestations"], work)
+    for field, member in _ATTESTATION_MEMBERS.items():
+        files[_SUBJECTS[field][2]] = signed[member]
+    source_raw, contributions_raw = files[_SOURCE_PLAN_FILE], files[_CONTRIBUTIONS_FILE]
     source = _strict_json(source_raw, "Source impact plan")
     require_retained_plan_pair(current, source, repository_root=repository_root)
     if source["headCommit"] != head:
         raise RetainedReuseRejected("run", "Source impact plan names another PR head")
+    # B1: only the protected signer of this exact attempt and tested commit makes these bytes authority.
+    subjects = Path(work) / "attested"
+    subjects.mkdir()
+    for field in ("plan", "contributions"):
+        _, archive_name, bundle_name = _SUBJECTS[field]
+        (subjects / archive_name).write_bytes(files[archive_name])
+        (subjects / bundle_name).write_bytes(files[bundle_name])
+        verify_retained_attestation(api, subjects / archive_name, subjects / bundle_name,
+            name=artifacts[field]["name"], digest=artifacts[field]["digest"],
+            trusted_workflow_sha=trusted_workflow_sha, validation_commit=source["validationCommit"],
+            pull_request=number, run_id=run["id"], run_attempt=attempt)
     tested = api.json(f"git/commits/{source['validationCommit']}")
     parents = tested.get("parents") if isinstance(tested, dict) else None
     if (not isinstance(tested, dict) or tested.get("sha") != source["validationCommit"]
@@ -937,24 +1116,34 @@ def observe_retained_pr_validation(current: Mapping[str, Any], run: Any, pull: M
         "runId": run["id"], "runAttempt": attempt, "headSha": head, "trustedWorkflowSha": trusted_workflow_sha,
         "validationCommit": source["validationCommit"], "validationTree": tree,
         "gateJobId": jobs[RETAINED_GATE_JOB]["id"], "outerGateJobId": jobs[RETAINED_OUTER_GATE_JOB]["id"],
-        "contributions": {"artifactId": contributions_artifact["id"], "artifactName": contributions_artifact["name"],
-                          "artifactDigest": contributions_artifact["digest"], "sha256": _digest(contributions_raw)},
-        "plan": {"artifactId": plan_artifact["id"], "artifactName": plan_artifact["name"],
-                 "artifactDigest": plan_artifact["digest"], "sha256": _digest(source_raw)},
+        "recordJobId": jobs[RETAINED_RECORD_JOB]["id"],
+        "attestations": {"artifactId": artifacts["attestations"]["id"],
+                         "artifactName": artifacts["attestations"]["name"],
+                         "artifactDigest": artifacts["attestations"]["digest"]},
     }
-    return {_SOURCE_PLAN_FILE: source_raw, _CONTRIBUTIONS_FILE: contributions_raw, "pointer": pointer}
+    for field in ("contributions", "plan"):
+        filename, archive_name, bundle_name = _SUBJECTS[field]
+        pointer[field] = {"artifactId": artifacts[field]["id"], "artifactName": artifacts[field]["name"],
+                          "artifactDigest": artifacts[field]["digest"], "sha256": _digest(files[filename]),
+                          "bundleSha256": _digest(files[bundle_name])}
+    return {**files, "pointer": pointer}
 
 
 def verify_retained_bundle(root: Any, current_plan: Any, *, repository_root: Any, environ: Mapping[str, str],
-                           trusted_workflow_sha: str, source_run_id: int | None = None,
+                           trusted_workflow_sha: str, verifier: Any, source_run_id: int | None = None,
                            source_run_attempt: int | None = None) -> dict[str, Any]:
-    """Offline re-verification of a staged bundle against the current plan and runner."""
+    """Re-verify a staged bundle against the current plan, runner and native attestations.
+
+    Uses no GitHub run metadata: only the bundle bytes, the current plan and
+    ``verifier.verify_attestation`` (Sigstore over the exact artifact zips).
+    """
+    import tempfile
     from pathlib import Path
     root, current_plan = Path(root), Path(current_plan)
     if root.is_symlink() or not root.is_dir():
         raise RetainedReuseRejected("bundle", "Retained validation bundle root is unsafe")
     entries = list(root.iterdir())
-    if ({entry.name for entry in entries} != _BUNDLE_FILES
+    if ({entry.name for entry in entries} != _BUNDLE_FILES or len(entries) != len(_BUNDLE_FILES)
             or any(entry.is_symlink() or not entry.is_file() for entry in entries)):
         raise RetainedReuseRejected("bundle", "Retained validation bundle has an unexpected file set")
     if current_plan.is_symlink() or not current_plan.is_file():
@@ -966,9 +1155,7 @@ def verify_retained_bundle(root: Any, current_plan: Any, *, repository_root: Any
         raise RetainedReuseRejected("consumer", str(error)) from error
     raw = {name: (root / name).read_bytes() for name in _BUNDLE_FILES}
     pointer = _strict_json(raw[_SOURCE_FILE], "Retained validation source", "bundle")
-    if set(pointer) != {"schemaVersion", "kind", "repository", "pullRequest", "runId", "runAttempt", "headSha",
-                        "trustedWorkflowSha", "validationCommit", "validationTree", "gateJobId", "outerGateJobId",
-                        "contributions", "plan"}:
+    if set(pointer) != _POINTER_KEYS:
         raise RetainedReuseRejected("bundle", "Retained validation source has an unexpected key set")
     run_id = _require_int(pointer["runId"], "Source run ID", "bundle")
     attempt = _require_int(pointer["runAttempt"], "Source run attempt", "bundle")
@@ -977,27 +1164,50 @@ def verify_retained_bundle(root: Any, current_plan: Any, *, repository_root: Any
             or pointer["pullRequest"] != current["pullRequest"] or type(pointer["pullRequest"]) is not int
             or pointer["validationTree"] != current["validationTree"]
             or pointer["trustedWorkflowSha"] != trusted_workflow_sha
+            or any(not isinstance(pointer[key], str) or _OID.fullmatch(pointer[key]) is None
+                   for key in ("headSha", "validationCommit", "trustedWorkflowSha"))
             or source_run_id is not None and run_id != source_run_id
             or source_run_attempt is not None and attempt != source_run_attempt):
         raise RetainedReuseRejected("bundle", "Retained validation source differs from this merge group")
-    _require_int(pointer["gateJobId"], "Gate job ID", "bundle")
-    _require_int(pointer["outerGateJobId"], "Outer gate job ID", "bundle")
-    for field, filename, name in (
-            ("contributions", _CONTRIBUTIONS_FILE, retained_contributions_name(current["validationTree"], attempt)),
-            ("plan", _SOURCE_PLAN_FILE, f"codex-agent-ci-plan-control-{current['validationTree']}")):
-        row = pointer[field]
-        if (not isinstance(row, dict) or set(row) != {"artifactId", "artifactName", "artifactDigest", "sha256"}
-                or type(row["artifactId"]) is not int or row["artifactId"] < 1 or row["artifactName"] != name
-                or not isinstance(row["artifactDigest"], str) or _DIGEST.fullmatch(row["artifactDigest"]) is None
-                or row["sha256"] != _digest(raw[filename])):
-            raise RetainedReuseRejected("bundle", f"Retained validation {field} pointer differs from its bytes")
-    source = _strict_json(raw[_SOURCE_PLAN_FILE], "Source impact plan")
-    require_retained_plan_pair(current, source, repository_root=repository_root)
-    if source["headCommit"] != pointer["headSha"] or source["validationCommit"] != pointer["validationCommit"]:
-        raise RetainedReuseRejected("bundle", "Retained validation source names another PR commit")
-    require_retained_contributions(_strict_json(raw[_CONTRIBUTIONS_FILE], "Retained contributions"),
-                                   source_plan_raw=raw[_SOURCE_PLAN_FILE], source_plan=source,
-                                   run_id=run_id, run_attempt=attempt)
+    for key in ("gateJobId", "outerGateJobId", "recordJobId"):
+        _require_int(pointer[key], key, "bundle")
+    tree = current["validationTree"]
+    signed = pointer["attestations"]
+    if (not isinstance(signed, dict) or set(signed) != {"artifactId", "artifactName", "artifactDigest"}
+            or type(signed["artifactId"]) is not int or signed["artifactId"] < 1
+            or signed["artifactName"] != retained_attestations_name(tree, attempt)
+            or not isinstance(signed["artifactDigest"], str) or _DIGEST.fullmatch(signed["artifactDigest"]) is None):
+        raise RetainedReuseRejected("bundle", "Retained validation attestation pointer is malformed")
+    names = {"contributions": retained_contributions_name(tree, attempt),
+             "plan": f"codex-agent-ci-plan-control-{tree}"}
+    with tempfile.TemporaryDirectory(prefix="retained-bundle-") as work:
+        for field, name in names.items():
+            filename, archive_name, bundle_name = _SUBJECTS[field]
+            row = pointer[field]
+            if (not isinstance(row, dict)
+                    or set(row) != {"artifactId", "artifactName", "artifactDigest", "sha256", "bundleSha256"}
+                    or type(row["artifactId"]) is not int or row["artifactId"] < 1 or row["artifactName"] != name
+                    or not isinstance(row["artifactDigest"], str) or _DIGEST.fullmatch(row["artifactDigest"]) is None
+                    or row["artifactDigest"] != _digest(raw[archive_name])
+                    or row["sha256"] != _digest(raw[filename]) or row["bundleSha256"] != _digest(raw[bundle_name])):
+                raise RetainedReuseRejected("bundle", f"Retained validation {field} pointer differs from its bytes")
+            member = _PLAN_FILE if field == "plan" else filename
+            extracted = _extract_exact(root / archive_name, Path(work) / field, (member,), name)
+            if extracted[member] != raw[filename]:
+                raise RetainedReuseRejected("bundle", f"Retained validation {field} differs from its attested archive")
+        source = _strict_json(raw[_SOURCE_PLAN_FILE], "Source impact plan")
+        require_retained_plan_pair(current, source, repository_root=repository_root)
+        if source["headCommit"] != pointer["headSha"] or source["validationCommit"] != pointer["validationCommit"]:
+            raise RetainedReuseRejected("bundle", "Retained validation source names another PR commit")
+        require_retained_contributions(_strict_json(raw[_CONTRIBUTIONS_FILE], "Retained contributions"),
+                                       source_plan_raw=raw[_SOURCE_PLAN_FILE], source_plan=source,
+                                       run_id=run_id, run_attempt=attempt)
+        for field, name in names.items():
+            _, archive_name, bundle_name = _SUBJECTS[field]
+            verify_retained_attestation(verifier, root / archive_name, root / bundle_name, name=name,
+                digest=pointer[field]["artifactDigest"], trusted_workflow_sha=trusted_workflow_sha,
+                validation_commit=pointer["validationCommit"], pull_request=pointer["pullRequest"],
+                run_id=run_id, run_attempt=attempt)
     return pointer
 
 
@@ -1012,8 +1222,8 @@ def _write_bundle(destination: Any, bundle: Mapping[str, Any]) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     staged = Path(tempfile.mkdtemp(prefix=".retained-", dir=destination.parent))
     try:
-        (staged / _SOURCE_PLAN_FILE).write_bytes(bundle[_SOURCE_PLAN_FILE])
-        (staged / _CONTRIBUTIONS_FILE).write_bytes(bundle[_CONTRIBUTIONS_FILE])
+        for name in sorted(_BUNDLE_FILES - {_SOURCE_FILE}):
+            (staged / name).write_bytes(bundle[name])
         (staged / _SOURCE_FILE).write_text(json.dumps(bundle["pointer"], indent=2, sort_keys=True) + "\n",
                                            encoding="utf-8")
         staged.rename(destination)
@@ -1041,6 +1251,36 @@ class GitHubReads:
     def download(self, artifact: Mapping[str, Any], destination: Any, max_bytes: int) -> None:
         from reuse import download_artifact_to_file
         download_artifact_to_file(dict(artifact), self._token, destination, max_bytes=max_bytes)
+
+    def verify_attestation(self, subject: Any, bundle: Any, *, signer_digest: str, source_digest: str) -> Any:
+        """Native Sigstore verification with the same pins as the other attested reuse paths.
+
+        Needs a gh with ``--signer-digest``/``--source-digest`` (install-gh.sh);
+        an older gh rejects those flags, which fails closed.
+        """
+        import json
+        import os
+        import subprocess
+        import time
+        command = [
+            "gh", "attestation", "verify", str(subject), "--bundle", str(bundle), "--repo", REPOSITORY,
+            "--signer-workflow", f"{REPOSITORY}/.github/workflows/product-validation.yml",
+            "--signer-digest", _oid(signer_digest, "Signer digest"),
+            "--source-digest", _oid(source_digest, "Source digest"),
+            "--cert-oidc-issuer", ATTESTATION_ISSUER, "--deny-self-hosted-runners", "--format", "json",
+        ]
+        environment = {**os.environ, "GH_TOKEN": self._token, "GH_HOST": "github.com", "GH_PROMPT_DISABLED": "1"}
+        for attempt in range(2):
+            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
+                                    env=environment, check=False)
+            if result.returncode == 0:
+                return json.loads(result.stdout)
+            # Retry only verifier startup, never an invalid attestation.
+            if attempt or result.returncode != 1 or not any(message in result.stderr for message in _SIGSTORE_STARTUP):
+                first = result.stderr.decode("utf-8", errors="replace").strip().splitlines()[:1]
+                raise ValueError(f"gh attestation verify exited {result.returncode}: {(first or [''])[0][:160]}")
+            time.sleep(2)
+        raise ValueError("gh attestation verify did not complete")
 
 
 def discover_retained_pr_validation(plan_path: Any, destination: Any, *, environ: Mapping[str, str],
@@ -1081,6 +1321,8 @@ def discover_retained_pr_validation(plan_path: Any, destination: Any, *, environ
             raise RetainedReuseRejected("fork" if error.reason == "fork" else "pull-request", str(error)) from error
         if pull.get("state") != "open" or pull.get("merged") is not False:
             raise RetainedReuseRejected("pull-request", "Merge-group pull request is not open")
+        if not isinstance(pull.get("base"), dict) or pull["base"].get("ref") != "main":
+            raise RetainedReuseRejected("pull-request", "Merge-group pull request does not target main")
         head = pull["head"]["sha"]
         if source_run_id is not None:
             candidates = [_require_int(source_run_id, "Requested source run", "run")]
@@ -1103,14 +1345,17 @@ def discover_retained_pr_validation(plan_path: Any, destination: Any, *, environ
                         raise RetainedReuseRejected("run", "Source run response names another run")
                     bundle = observe_retained_pr_validation(current, run, pull, api=api,
                         repository_root=repository_root, trusted_workflow_sha=trusted_workflow_sha, work=work)
-                except RetainedReuseRejected as error:
-                    failure = error
-                    log(route_line(error.reason, f"run {run_id}: {error}"))
+                except Exception as error:
+                    # One unverifiable candidate never decides; the next is verified
+                    # from scratch, and no candidate at all still fails closed.
+                    failure = error if isinstance(error, RetainedReuseRejected) else RetainedReuseRejected(
+                        "error", f"{type(error).__name__}: {error}")
+                    log(route_line(failure.reason, f"run {run_id}: {failure}"))
                     continue
             _write_bundle(destination, bundle)
             try:
                 pointer = verify_retained_bundle(destination, path, repository_root=repository_root,
-                    environ=environ, trusted_workflow_sha=trusted_workflow_sha,
+                    environ=environ, trusted_workflow_sha=trusted_workflow_sha, verifier=api,
                     source_run_id=run_id, source_run_attempt=bundle["pointer"]["runAttempt"])
             except BaseException:
                 shutil.rmtree(destination, ignore_errors=True)
@@ -1131,14 +1376,16 @@ def discover_retained_pr_validation(plan_path: Any, destination: Any, *, environ
 def stage_merge_group_retained_validation(bundle: Any, current_plan: Any, destination: Any, *,
                                           repository_root: Any, environ: Mapping[str, str],
                                           trusted_workflow_sha: str, source_run_id: int,
-                                          source_run_attempt: int) -> dict[str, Any]:
-    """Merge gate: re-verify the plan-job bundle offline and stage its distinct artifact."""
+                                          source_run_attempt: int, verifier: Any = None) -> dict[str, Any]:
+    """Merge gate: re-verify the plan-job bundle (bytes and attestations) and stage its distinct artifact."""
     import shutil
     from pathlib import Path
     if environ.get("GITHUB_EVENT_NAME") != "merge_group":
         raise RetainedReuseRejected("not-merge-group", "Retained PR validation reuse is merge-group only")
+    if verifier is None:
+        verifier = GitHubReads(environ.get("GITHUB_TOKEN", ""), environ.get("GITHUB_API_URL", GITHUB_API))
     pointer = verify_retained_bundle(bundle, current_plan, repository_root=repository_root, environ=environ,
-        trusted_workflow_sha=trusted_workflow_sha, source_run_id=source_run_id,
+        trusted_workflow_sha=trusted_workflow_sha, verifier=verifier, source_run_id=source_run_id,
         source_run_attempt=source_run_attempt)
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
