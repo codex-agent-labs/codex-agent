@@ -2169,7 +2169,8 @@ def _prior_failed_runtime_objects(
                   "artifactId": original_artifact["id"],
                   "artifactSha256": original_artifact["digest"]}
         artifact, _, observed, workflow = _authenticate_runtime_original_reference_source(
-            plan, consumer_producer, source, trusted_workflow_sha=original_workflow_sha, token=token)
+            plan, consumer_producer, source, trusted_workflow_sha=original_workflow_sha, token=token,
+            pinned=completed_frozen)
         job_name = f"product-validation / runtime-{instance.component}-{instance.phase}-{instance.target}"
         job = _matching_ci_jobs(observed[0]["jobs"], job_name)[0]
         completed_frozen.require_original_locator(
@@ -2204,8 +2205,19 @@ def _prior_failed_runtime_objects(
                         **({"completed_frozen": completed_frozen} if completed_frozen is not None else {}))
                     receipt = verified["receipt"]
                     producer = receipt["producer"]
+                    # T4: a prior Runtime receipt is the consumer's own PR scope, or an
+                    # owner-pinned (T4c) PR-31 phase receipt of the native completed
+                    # capability (exact frozen receipt digest), for the consumer that
+                    # capability admits. Event, trust domain and ordering stay exact.
+                    pinned_original = (plan is not None and completed_frozen is not None
+                                       and completed_frozen.pins_receipt(receipt))
+                    if pinned_original:
+                        completed_frozen.check_consumer({"kind": "ci", "producer": consumer_producer})
+                        if plan.get("pullRequest") != completed_frozen.admitted_pull_request():
+                            raise ValueError("Pinned Runtime consumer plan differs from its admitted scope [scope:consumer]")
                     if (receipt["trustDomain"] != "development" or producer["event"] != "pull_request"
-                            or (plan is not None and producer["pullRequest"] != plan["pullRequest"])):
+                            or (plan is not None and not pinned_original
+                                and producer["pullRequest"] != plan["pullRequest"])):
                         raise ValueError("Prior failed Runtime receipt is not an original PR phase")
                     if plan is not None:
                         run_id = producer["runId"]
@@ -2221,7 +2233,11 @@ def _prior_failed_runtime_objects(
                                 or official.get("path") != ".github/workflows/ci.yml"
                                 or official.get("status") != "completed"
                                 or official.get("conclusion") not in {"failure", "cancelled"}
-                                or not run_matches_pr(official, plan["pullRequest"])
+                                or not (run_matches_pr(official, plan["pullRequest"]) if not pinned_original
+                                        # The pinned PR-31 run's live association is gone (PR merged);
+                                        # its run ID/attempt is receipt-pinned and its upload locator-pinned.
+                                        else (run_matches_pr(official, producer["pullRequest"])
+                                              or producer_scope.unassociated_pull_request_run(official)))
                                 or any(not isinstance(official.get(field), dict)
                                        or official[field].get("full_name") != plan["repository"]
                                        or official[field].get("fork") is not False
